@@ -3,7 +3,7 @@
 這是 repo 根目錄的 DVB-S2 Verilog（`../rtl`，和 Z7020 版完全相同；TX＋RX、short frame、QPSK／8PSK），
 放進 USRP B210 的 FPGA（Spartan-6 XC6SLX150），位置在主機串流和 radio 的 DUC／DDC 之間。
 **PC 程式啟動時，UHD 會把這顆 FPGA image 載入 B210**；之後由 PC 下設定、讀狀態、收送資料。
-也可以只用一台 B210 自收自發，並用瀏覽器看 TX／RX 狀態和接收頻譜（見「4. 網頁模式」）。
+也可以只用一台 B210 自收自發，並用瀏覽器看解碼速率、SNR／RSSI、TX／RX 狀態和接收頻譜（見「4. 網頁模式」）。
 
 ```
 PC1（發射端）                                    PC2（接收端）
@@ -24,7 +24,7 @@ B210 FPGA radio 0                               B210 FPGA radio 0
 | `patch_uhd_fpga.py` | 把 DVB-S2 加進 UHD 原始碼的 B210 FPGA，並新增 `make B210_DVBS2` 目標 |
 | `build_fpga.sh` | 一鍵完成：抓和已安裝版本相同的 UHD 原始碼 → patch → 用 ISE 編譯 |
 | `host/dvbs2_b210.cpp` | PC 端程式（UHD C++），用 `host/build.sh` 編譯；`--web` 時內建網頁伺服器 |
-| `host/web/index.html` | 網頁介面（TX／RX 設定、狀態、頻譜、傳檔） |
+| `host/web/index.html` | 網頁介面（解碼速率、SNR／RSSI／CFO、解碼速率圖、TX／RX 設定、頻譜、傳檔、基頻狀態） |
 | `sim/reg_b210.sh`、`sim/tb_b210.v` | 模擬：兩台「B210」中間接通道模型，PRBS 和檔案傳輸兩種模式都測 |
 
 ## 需要的東西
@@ -135,33 +135,44 @@ cd b210/host/build
 # 瀏覽器開 http://localhost:8080
 ```
 
-* **程式啟動時 TX 和 RX 都是關閉的**：在網頁 TX、RX 卡片右上角按「關閉／開啟」切換。TX 關閉時不送 TX 串流，
+* **程式啟動時 TX 和 RX 都是關閉的**：在網頁 TX、RX 卡片右上角按「Off／On」切換。TX 關閉時不送 TX 串流，
   UHD 會關掉 AD9361 的 TX 通道和前端開關，沒有射頻輸出；RX 關閉時不收串流、不顯示頻譜。
   切換一次會重新啟動串流（約 1–2 秒）。傳檔自測需要 TX 和 RX 都開啟。
 * 預設：`--mode trx`、TX／RX 頻率 **1 GHz**、頻寬 **2 MHz**（Rs = 1.4815 Msym/s，roll-off 0.35）、
   TX 增益 40 dB、RX 增益 40 dB、MODCOD 13（8PSK 2/3）、有導頻。命令列參數可以改預設值。
+* 網頁介面是英文，深色／淺色跟隨系統設定。版面（由上到下）：**RX Decode & RF Signal**（大字）→ 解碼速率圖 → TX／RX 設定 → 接收頻譜 → 傳檔 → **Baseband Modem Status**（小字）。
+  頁首顯示 FPGA 版本、TX 的 MODCOD／導頻／roll-off，右邊是連線狀態（Connected／Disconnected）和 RX 鎖定狀態
 * 網頁顯示：
-  - **資料率／解碼速率**（TX、RX 卡片最上面，每 0.5 秒用該 0.5 秒內的計數差計算一次）：
+  - **RX Decode & RF Signal**（最上面，大字方塊）：**解碼速率**（MODCOD 容量的 0–100 %，附長條；每 0.5 秒更新，下方小字是 Mbit/s、幀/秒和容量）、
+    鎖定狀態（含 MODCOD／導頻）、SNR Es/N0、Eb/N0、RSSI、訊號電平、
+    頻率偏移 CFO（Hz，≥ 1 kHz 時改用 kHz，另顯示相對 RX 頻率的 ppm，鎖定後才有）；標題旁顯示 RX 頻率、符號率、增益。
+    各欄定義見下面「SNR／RSSI」
+  - **資料率／解碼速率**（RX 解碼速率在最上面，TX 資料率在最下面「Baseband Modem Status」；每 0.5 秒用該 0.5 秒內的計數差計算一次）：
     TX = 送出的資料幀 × DFL（Kbch − 80 位元，不含 dummy 幀）÷ 時間；
     RX 解碼速率 = BBHEADER CRC 正確的 BBFRAME × DFL ÷ 時間，另外顯示每秒解出的幀數。
     旁邊是這個 MODCOD 在目前符號率下的容量（DFL ÷ PLFRAME 符號數 × Rs）和使用率。PRBS 模式約 100 %，傳檔時約 90 %。
-    符號率很低時每 0.5 秒只有幾個幀，數字會以 1 幀為單位跳動
-  - **解碼速率圖**：最近 2 分鐘的 RX 解碼速率（每 0.5 秒一點），虛線是 MODCOD 容量；滑鼠移到圖上
-    （或點一下圖後用左右方向鍵）顯示該點的速率、幀/秒、容量使用率和時間，下方「表格」列出最近 20 筆。
-    歷史資料存在瀏覽器，重新整理網頁會清空
-  - **SNR／RSSI**（RX 卡片）：
+    符號率很低時每 0.5 秒只有幾個幀，數字會以 1 幀為單位跳動。0.5 秒內以整幀計數，量測值可能比容量高約 1 %，
+    網頁顯示時限制在容量以內（0–100 %）；`/api/status` 仍是原始量測值
+  - **解碼速率圖**（緊接在最上面方塊下方）：最近 2 分鐘的 RX 解碼速率（每 0.5 秒一點），y 軸固定 0–100 %（100 % = MODCOD 容量）；滑鼠移到圖上
+    （或點一下圖後用左右方向鍵）顯示該點的百分比、速率、幀/秒和時間，下方「Table」列出最近 20 筆；標題旁顯示目前值和圖上平均。
+    中斷超過 1.5 秒（例如 RX 關閉）時曲線斷開。歷史資料存在瀏覽器，重新整理網頁會清空
+  - **SNR／RSSI**（RX Decode & RF Signal 區）：
     - Es/N0（估計）：PC 端用頻譜那 1024 個 DDC 取樣做 M2M4 盲估計（RRC 匹配濾波、16 個時序相位取最佳，
       與載波相位和 CFO 無關，鎖定前也能看），0.5 秒時間常數平滑。模擬驗證 QPSK／8PSK、roll-off 0.20／0.35
       在 0–25 dB 誤差 ±0.3 dB，−2 dB 附近偏高最多約 0.9 dB。實測上限約 22–23 dB（B210 TX／RX 本身的 EVM）
     - Eb/N0：Es/N0 − 10·log₁₀(資訊位元／符號)，鎖定後才有
     - RSSI：AD9361 的 RSSI 讀值（dB，0.25 dB 一階，相對值，不是校正過的 dBm）
     - 訊號電平：DDC 輸出功率（dBFS，含雜訊）；高於 −3 dBFS 時標紅，表示接近飽和，請降 RX 增益
-  - **TX**：頻率、頻寬、增益（可修改，按「套用 TX」生效）、符號率、取樣率／master clock、類比濾波器頻寬、
-    資料來源、已送幀數、dummy 幀、欠載次數
-  - **RX**：頻率、頻寬、增益（可修改，按「套用 RX」）、鎖定狀態、偵測到的 MODCOD、**頻率偏移（CFO，Hz）**、FLL 段、
-    幀數、LDPC 迭代、BCH、BB CRC、BER、**接收頻譜**（FPGA 抓 1024 個 DDC 取樣，PC 端加 Hann 窗做 FFT，dBFS，每次更新一筆、不做平均）
-  - **傳檔自測**：選一個檔案（例如 `.bin`）按「傳送檔案」，檔案經過 TX → 空中／纜線 → RX 解調後存檔，
-    網頁顯示進度、TX 送出／RX 寫入速率、預估剩餘時間和比對結果（大小、錯誤位元組），並提供下載；「回到 PRBS 測試」切回 BER 量測。
+  - **TX 卡片**：頻率、頻寬、增益（可修改，按「Apply TX」生效）、符號率、取樣率／master clock、類比濾波器頻寬
+  - **RX 卡片**：頻率、頻寬、增益（可修改，按「Apply RX」）、符號率、類比濾波器頻寬
+  - **Baseband Modem Status**（最下面，小字）：
+    - TX：資料率、MODCOD 容量和使用率、資料來源（PRBS-23 或檔名）、已編碼／已送幀數、dummy 幀、欠載次數（DUC／USB）
+    - RX：解碼速率和幀/秒、MODCOD 容量和使用率、狀態（鎖定／MODCOD／導頻／FLL 段）、幀數／漏幀／PLS 失敗、
+      LDPC 迭代／丟棄、BCH 更正／失敗、BBFRAME 正確／CRC 錯誤、BER（PRBS 模式）、USB 溢位
+  - **接收頻譜**（FPGA 抓 1024 個 DDC 取樣，PC 端加 Hann 窗做 FFT，dBFS，每次更新一筆、不做平均）：
+    y 軸 0 到 −110 dBFS，x 軸是相對中心頻率的 MHz，黃色底色是 RX 設定的佔用頻寬。FPGA image 2.1 以前沒有頻譜
+  - **傳檔自測**：選一個檔案（例如 `.bin`）按「Send file」，檔案經過 TX → 空中／纜線 → RX 解調後存檔，
+    網頁顯示進度、TX 送出／RX 寫入速率、預估剩餘時間、序號缺口和比對結果（大小、錯誤位元組），並提供下載；「Back to PRBS test」切回 BER 量測。
     送出和收到的檔案放在 `--file-dir`（預設 `dvbs2_files/`）。
 * 網頁每秒更新 10 次（狀態和頻譜）。PRBS 模式的頻譜直接用 RX 串流裡的 DDC 取樣計算；傳檔時串流裡是資料位元組，
   頻譜改從 FPGA 快照讀（每次 512 個 USB 暫存器讀取），約每秒 3 次，狀態仍是每秒 10 次。
@@ -169,7 +180,7 @@ cd b210/host/build
   `tx.rate_bps`、`tx.capacity_bps`、`tx.host_bps`（主機送進 FPGA 的位元組速率）、
   `rx.rate_bps`、`rx.frames_per_s`、`rx.capacity_bps`、`rx.file_bps`（檔案寫入速率）、`rx.rate_interval`（實際計算區間，秒）、`rx.rate_time`（最近一次計算的時間，每 0.5 秒變一次）；
   RX 品質：`rx.esn0_db`、`rx.ebn0_db`、`rx.rssi_db`、`rx.level_dbfs`（無資料時為 null）。
-* 修改頻寬會重設取樣率和 master clock，數據機會重新鎖定（約 1–2 秒）。
+* 修改頻寬會重設取樣率和 master clock，數據機會重新鎖定（約 1–2 秒），傳送中的檔案會從頭重送；頻率和增益立即生效、不中斷串流。
 * 只聽 127.0.0.1；要從別台電腦開網頁加 `--web-bind 0.0.0.0`（沒有密碼，只在可信任的網路上用）。
 * 1 GHz 落在 960–1215 MHz 航空導航頻段，用天線時請把 TX 增益保持在低值，或改用纜線＋衰減器、
   或改到你有執照的頻率。

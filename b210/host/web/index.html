@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -16,13 +16,13 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg);
-       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line);
          background: var(--card); position: sticky; top: 0; z-index: 2; }
 header h1 { font-size: 17px; margin: 0; font-weight: 650; }
 header .sub { color: var(--muted); font-size: 13px; }
 header .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-.pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); }
+.pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); white-space: nowrap; }
 .pill.ok { color: var(--ok); border-color: var(--ok); }
 .pill.bad { color: var(--bad); border-color: var(--bad); }
 .pill.warn { color: var(--warn); border-color: var(--warn); }
@@ -45,7 +45,6 @@ dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr))
 dl div { min-width: 0; }
 dt { font-size: 12px; color: var(--muted); }
 dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 550; overflow-wrap: anywhere; }
-.big { font-size: 22px; font-weight: 650; }
 canvas { width: 100%; height: 300px; display: block; border-radius: 8px; background: var(--plot-bg); }
 .filebox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 progress { width: 100%; height: 10px; }
@@ -70,70 +69,106 @@ details.tbl summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 details.tbl table { border-collapse: collapse; margin-top: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
 details.tbl th, details.tbl td { padding: 2px 12px 2px 0; text-align: right; border-bottom: 1px solid var(--line); }
 details.tbl th { color: var(--muted); font-weight: 600; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tile.span2 { grid-column: span 2; }
+.tile.span2 .v { font-size: clamp(32px, 4.2vw, 48px); }
+.tile { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px 12px; min-width: 0; }
+.tile .k { font-size: 13px; color: var(--muted); font-weight: 600; }
+.tile .v { font-size: clamp(28px, 3.2vw, 38px); font-weight: 650; line-height: 1.2; white-space: nowrap;
+           font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.tile .u { font-size: .45em; font-weight: 600; color: var(--muted); margin-left: 5px; }
+.tile .s { font-size: 12px; color: var(--muted); min-height: 1.45em; }
+.tile.ok .v { color: var(--ok); }
+.tile.bad .v, .tile.bad .s { color: var(--bad); }
+.tile.dim .v { color: var(--muted); }
+.bar { height: 8px; border-radius: 4px; background: var(--line); margin: 4px 0 6px; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+.tile.dim .bar i { background: var(--muted); }
+.bb h2 { font-size: 13px; color: var(--muted); }
+.bbcols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; }
+.bbcols h3 { font-size: 12px; margin: 0; color: var(--muted); font-weight: 650; }
+.bb dl { grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 4px 12px; margin-top: 6px; }
+.bb dt { font-size: 11px; }
+.bb dd { font-size: 12.5px; font-weight: 500; }
+.bbcols .off dl { opacity: .45; }
 .result.ok { color: var(--ok); font-weight: 650; }
 .result.bad { color: var(--bad); font-weight: 650; }
-@media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } .form { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } .form { grid-template-columns: 1fr 1fr; }
+                            .bbcols { grid-template-columns: 1fr; } .tiles { grid-template-columns: 1fr 1fr; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>DVB-S2 回環測試</h1>
+  <h1>DVB-S2 Loopback Test</h1>
   <span class="sub" id="sub">USRP B210</span>
-  <div class="right"><span class="pill" id="conn">連線中…</span><span class="pill" id="lockpill">RX —</span></div>
+  <div class="right"><span class="pill" id="conn">Connecting…</span><span class="pill" id="lockpill">RX —</span></div>
 </header>
 <main>
-  <section class="card off" id="tx_card">
-    <h2>TX 發射 <button class="onoff" id="tx_onoff" onclick="toggle('tx')" aria-pressed="false">關閉</button></h2>
-    <div class="form">
-      <div><label for="tx_freq">頻率 (MHz)</label><input id="tx_freq" type="number" step="0.001"></div>
-      <div><label for="tx_bw">頻寬 (MHz)</label><input id="tx_bw" type="number" step="0.001" min="0.1" max="5.2"></div>
-      <div><label for="tx_gain">增益 (dB)</label><input id="tx_gain" type="number" step="0.5" min="0" max="89.75"></div>
-    </div>
-    <div class="actions"><button onclick="apply('tx')">套用 TX</button>
-      <span class="hint" id="tx_hint"></span></div>
-    <dl id="tx_stat"></dl>
-  </section>
-
-  <section class="card off" id="rx_card">
-    <h2>RX 接收 <button class="onoff" id="rx_onoff" onclick="toggle('rx')" aria-pressed="false">關閉</button></h2>
-    <div class="form">
-      <div><label for="rx_freq">頻率 (MHz)</label><input id="rx_freq" type="number" step="0.001"></div>
-      <div><label for="rx_bw">頻寬 (MHz)</label><input id="rx_bw" type="number" step="0.001" min="0.1" max="5.2"></div>
-      <div><label for="rx_gain">增益 (dB)</label><input id="rx_gain" type="number" step="0.5" min="0" max="76"></div>
-    </div>
-    <div class="actions"><button onclick="apply('rx')">套用 RX</button>
-      <span class="hint" id="rx_hint"></span></div>
-    <dl id="rx_stat"></dl>
+  <section class="card wide" id="rf_card" aria-live="off">
+    <h2>RX Decode &amp; RF Signal <span class="hint" id="rf_info"></span></h2>
+    <div class="tiles" id="rf_tiles"></div>
   </section>
 
   <section class="card wide">
-    <h2>RX 解碼速率（每 0.5 秒，最近 2 分鐘） <span class="hint" id="rate_info"></span></h2>
+    <h2>RX Decode Rate (% of MODCOD capacity, every 0.5 s, last 2 min) <span class="hint" id="rate_info"></span></h2>
     <div class="chart-wrap">
-      <canvas id="rate" tabindex="0" role="img" aria-label="RX 解碼速率歷史圖；左右方向鍵逐點查看"></canvas>
+      <canvas id="rate" tabindex="0" role="img" aria-label="RX decode-rate history in percent of the MODCOD capacity; use the left/right arrow keys to step through points"></canvas>
       <div class="tip" id="rate_tip" role="status"></div>
     </div>
-    <details class="tbl" id="rate_tbl"><summary>表格（最近 20 筆）</summary>
-      <table><thead><tr><th>時間</th><th>解碼速率</th><th>幀/秒</th><th>容量使用率</th></tr></thead><tbody id="rate_rows"></tbody></table>
+    <details class="tbl" id="rate_tbl"><summary>Table (last 20 points)</summary>
+      <table><thead><tr><th>Time</th><th>Decode rate</th><th>Bit rate</th><th>Frames/s</th></tr></thead><tbody id="rate_rows"></tbody></table>
     </details>
   </section>
 
+  <section class="card off" id="tx_card">
+    <h2>TX Transmit <button class="onoff" id="tx_onoff" onclick="toggle('tx')" aria-pressed="false">Off</button></h2>
+    <div class="form">
+      <div><label for="tx_freq">Frequency (MHz)</label><input id="tx_freq" type="number" step="0.001"></div>
+      <div><label for="tx_bw">Bandwidth (MHz)</label><input id="tx_bw" type="number" step="0.001" min="0.1" max="5.2"></div>
+      <div><label for="tx_gain">Gain (dB)</label><input id="tx_gain" type="number" step="0.5" min="0" max="89.75"></div>
+    </div>
+    <div class="actions"><button onclick="apply('tx')">Apply TX</button>
+      <span class="hint" id="tx_hint"></span></div>
+    <dl id="tx_rf"></dl>
+  </section>
+
+  <section class="card off" id="rx_card">
+    <h2>RX Receive <button class="onoff" id="rx_onoff" onclick="toggle('rx')" aria-pressed="false">Off</button></h2>
+    <div class="form">
+      <div><label for="rx_freq">Frequency (MHz)</label><input id="rx_freq" type="number" step="0.001"></div>
+      <div><label for="rx_bw">Bandwidth (MHz)</label><input id="rx_bw" type="number" step="0.001" min="0.1" max="5.2"></div>
+      <div><label for="rx_gain">Gain (dB)</label><input id="rx_gain" type="number" step="0.5" min="0" max="76"></div>
+    </div>
+    <div class="actions"><button onclick="apply('rx')">Apply RX</button>
+      <span class="hint" id="rx_hint"></span></div>
+    <dl id="rx_rf"></dl>
+  </section>
+
   <section class="card wide">
-    <h2>接收頻譜 <span class="hint" id="spec_info"></span></h2>
+    <h2>RX Spectrum <span class="hint" id="spec_info"></span></h2>
     <canvas id="spec"></canvas>
   </section>
 
   <section class="card wide">
-    <h2>檔案回環測試</h2>
+    <h2>File Loopback Test</h2>
     <div class="filebox">
       <input type="file" id="file">
-      <button id="send" onclick="sendFile()">傳送檔案</button>
+      <button id="send" onclick="sendFile()">Send file</button>
       <span class="hint" id="up_hint"></span>
-      <button class="ghost" onclick="post('/api/prbs')">回到 PRBS 測試</button>
-      <a id="dl" class="hint" href="/api/received" style="display:none">下載收到的檔案</a>
+      <button class="ghost" onclick="post('/api/prbs')">Back to PRBS test</button>
+      <a id="dl" class="hint" href="/api/received" style="display:none">Download received file</a>
     </div>
     <dl id="file_stat"></dl>
     <div style="margin-top:10px"><progress id="prog" max="1" value="0"></progress></div>
-    <p class="hint">頻寬 = 佔用頻寬 Rs·(1+roll-off)，符號率由頻寬換算。改頻寬會重新啟動串流（傳到一半的檔案會重送）；頻率和增益即時生效。</p>
+    <p class="hint">Bandwidth = occupied bandwidth Rs·(1+roll-off); the symbol rate is derived from it. Changing the bandwidth restarts the streams (a file in progress is resent); frequency and gain take effect immediately.</p>
+  </section>
+
+  <section class="card wide bb">
+    <h2>Baseband Modem Status</h2>
+    <div class="bbcols">
+      <div id="tx_bbcol" class="off"><h3>TX</h3><dl id="tx_bb"></dl></div>
+      <div id="rx_bbcol" class="off"><h3>RX</h3><dl id="rx_bb"></dl></div>
+    </div>
   </section>
 </main>
 <script>
@@ -146,14 +181,18 @@ function mhz(v, d = 3) { return fmt(v / 1e6, d) + ' MHz'; }
 function bps(v, bytes) {
   if (v === undefined || v === null || isNaN(v)) return '—';
   const t = v >= 1e6 ? fmt(v / 1e6, 3) + ' Mbit/s' : v >= 1e3 ? fmt(v / 1e3, 1) + ' kbit/s' : fmt(v) + ' bit/s';
-  return bytes ? `${t}（${fmt(v / 8e3, 1)} kB/s）` : t;
+  return bytes ? `${t} (${fmt(v / 8e3, 1)} kB/s)` : t;
 }
-function usage(rate, cap) { return cap > 0 ? `${bps(cap)} · 使用 ${fmt(100 * rate / cap, 0)} %` : '—'; }
+// a 0.5 s window counts whole frames, so a measurement can land ~1 % above the MODCOD capacity:
+// show decoded rates clamped to [0, capacity] and percentages to [0, 100 %]
+function capRate(rate, cap) { return cap > 0 ? Math.min(Math.max(rate || 0, 0), cap) : Math.max(rate || 0, 0); }
+function capPct(rate, cap) { return cap > 0 ? 100 * capRate(rate, cap) / cap : 0; }
+function usage(rate, cap) { return cap > 0 ? `${bps(cap)} · ${fmt(capPct(rate, cap), 0)} % used` : '—'; }
 function dur(sec) {
   if (!isFinite(sec) || sec < 0) return '—';
   sec = Math.round(sec);
   const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = sec % 60;
-  return (h ? h + ' 時 ' : '') + (h || m ? m + ' 分 ' : '') + x + ' 秒';
+  return (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + x + ' s';
 }
 function stat(el, rows) {
   $(el).innerHTML = rows.map(([k, v, cls]) => `<div><dt>${k}</dt><dd class="${cls || ''}">${v}</dd></div>`).join('');
@@ -169,7 +208,7 @@ async function apply(side) {
   p.set(side + '_freq', $(side + '_freq').value * 1e6);
   p.set(side + '_bw', $(side + '_bw').value * 1e6);
   p.set(side + '_gain', $(side + '_gain').value);
-  $(side + '_hint').textContent = (await post('/api/config', p)) ? '已送出' : '失敗';
+  $(side + '_hint').textContent = (await post('/api/config', p)) ? 'Sent' : 'Failed';
   setTimeout(() => $(side + '_hint').textContent = '', 2500);
 }
 // TX / RX on-off (off when the program starts); the button follows the state reported by the program
@@ -180,10 +219,10 @@ async function toggle(side) {
   busy[side] = performance.now();
   busy[side + '_want'] = want;
   $(side + '_onoff').disabled = true;
-  $(side + '_onoff').textContent = want ? '開啟中…' : '關閉中…';
+  $(side + '_onoff').textContent = want ? 'Turning on…' : 'Turning off…';
   const p = new URLSearchParams();
   p.set(side + '_on', want ? 1 : 0);
-  if (!(await post('/api/config', p))) { busy[side] = 0; $(side + '_hint').textContent = '失敗'; }
+  if (!(await post('/api/config', p))) { busy[side] = 0; $(side + '_hint').textContent = 'Failed'; }
 }
 function showOnOff(side, on) {
   const b = $(side + '_onoff');
@@ -193,31 +232,32 @@ function showOnOff(side, on) {
   }
   b.disabled = false;
   b.className = 'onoff' + (on ? ' on' : '');
-  b.textContent = on ? '開啟' : '關閉';
+  b.textContent = on ? 'On' : 'Off';
   b.setAttribute('aria-pressed', on);
-  b.title = on ? '按一下關閉' : '按一下開啟';
+  b.title = on ? 'Click to turn off' : 'Click to turn on';
   $(side + '_card').classList.toggle('off', !on);
+  $(side + '_bbcol').classList.toggle('off', !on);
 }
 const MAX_UPLOAD = 2 * 1024 ** 3;          // must match MAX_UPLOAD in dvbs2_b210.cpp
 let uploading = false;
 function sendFile() {
-  if (last && !(last.tx.on && last.rx.on)) { alert('請先開啟 TX 和 RX'); return; }
+  if (last && !(last.tx.on && last.rx.on)) { alert('Turn on TX and RX first'); return; }
   const f = $('file').files[0];
-  if (!f) { alert('先選擇要傳送的檔案'); return; }
-  if (f.size > MAX_UPLOAD) { alert(`檔案太大：${fmt(f.size / 1048576, 1)} MB，上限 2048 MB`); return; }
-  if (f.size === 0) { alert('檔案是空的'); return; }
+  if (!f) { alert('Choose a file to send first'); return; }
+  if (f.size > MAX_UPLOAD) { alert(`File too large: ${fmt(f.size / 1048576, 1)} MB (limit 2048 MB)`); return; }
+  if (f.size === 0) { alert('The file is empty'); return; }
   uploading = true;
   $('send').disabled = true;
   const done = msg => {
     uploading = false;
     $('send').disabled = false;
     $('up_hint').textContent = '';
-    if (msg) alert('上傳失敗：' + msg);
+    if (msg) alert('Upload failed: ' + msg);
   };
   const x = new XMLHttpRequest();
   x.open('POST', '/api/send?name=' + encodeURIComponent(f.name));
   x.upload.onprogress = e => {
-    if (e.lengthComputable) $('up_hint').textContent = `上傳中 ${(100 * e.loaded / e.total).toFixed(0)} %`;
+    if (e.lengthComputable) $('up_hint').textContent = `Uploading ${(100 * e.loaded / e.total).toFixed(0)} %`;
   };
   x.onload = () => {
     if (x.status === 200) return done('');
@@ -225,9 +265,40 @@ function sendFile() {
     try { m = JSON.parse(m).error || m; } catch (e) {}
     done(`HTTP ${x.status} ${m}`);
   };
-  x.onerror = () => done('連線中斷（檔案無法讀取，或程式沒有回應）');
-  x.ontimeout = () => done('逾時');
+  x.onerror = () => done('Connection lost (the file could not be read, or the program is not responding)');
+  x.ontimeout = () => done('Timed out');
   x.send(f);
+}
+
+// RF signal tiles: [label, value, unit, sub-line, state] ; state ok / bad / dim
+function tiles(el, rows) {
+  $(el).innerHTML = rows.map(([k, v, u, sub, cls]) =>
+    `<div class="tile ${cls || ''}"><div class="k">${k}</div>` +
+    `<div class="v">${v}${v !== '—' && u ? `<span class="u">${u}</span>` : ''}</div><div class="s">${sub || ''}</div></div>`).join('');
+}
+function renderRf(rx) {
+  const on = rx.on, lk = on && rx.lock, has = v => on && v !== undefined && v !== null && !isNaN(v);
+  const cfoK = Math.abs(rx.cfo_hz) >= 1000;
+  const hot = has(rx.level_dbfs) && rx.level_dbfs > -3;
+  // decode rate: computed by the program over each 0.5 s interval (rx.rate_time changes every 0.5 s)
+  const cap = lk ? rx.capacity_bps : 0, dr = lk ? capRate(rx.rate_bps, cap) : 0, pc = lk ? capPct(rx.rate_bps, cap) : 0;
+  const hasRate = on && rx.rate_bps != null;
+  tiles('rf_tiles', [
+    ['Decode rate (% of MODCOD capacity, every 0.5 s)', hasRate ? fmt(pc, 0) : '—', '%',
+     (hasRate ? `<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pc.toFixed(0)}"><i style="width:${pc.toFixed(1)}%"></i></div>` : '') +
+     (on ? `${bps(dr)} · ${fmt(lk ? rx.frames_per_s : 0, 1)} frames/s` + (cap > 0 ? ` · capacity ${bps(cap)}` : '') : 'RX is off'),
+     !on ? 'dim span2' : lk ? 'span2' : 'dim span2'],
+    ['Lock', !on ? 'Off' : lk ? '✔ Locked' : '✖ No lock', '',
+     lk ? `${rx.modcod}${rx.pilots ? ' · pilots' : ''}` : on ? 'Searching for PLHEADER' : 'RX is off', !on ? 'dim' : lk ? 'ok' : 'bad'],
+    ['SNR Es/N0', has(rx.esn0_db) ? fmt(rx.esn0_db, 1) : '—', 'dB', 'M2M4 blind estimate, ±0.3 dB', has(rx.esn0_db) ? '' : 'dim'],
+    ['Eb/N0', lk && has(rx.ebn0_db) ? fmt(rx.ebn0_db, 1) : '—', 'dB', 'Per information bit (when locked)', lk && has(rx.ebn0_db) ? '' : 'dim'],
+    ['RSSI', has(rx.rssi_db) ? fmt(rx.rssi_db, 2) : '—', 'dB', 'AD9361, relative, not dBm', has(rx.rssi_db) ? '' : 'dim'],
+    ['Signal level', has(rx.level_dbfs) ? fmt(rx.level_dbfs, 1) : '—', 'dBFS',
+     hot ? '⚠ Near saturation, lower the RX gain' : 'DDC output (incl. noise)', !has(rx.level_dbfs) ? 'dim' : hot ? 'bad' : ''],
+    ['Frequency offset (CFO)', lk ? fmt(cfoK ? rx.cfo_hz / 1e3 : rx.cfo_hz, cfoK ? 2 : 1) : '—', cfoK ? 'kHz' : 'Hz',
+     lk && rx.freq ? `${fmt(rx.cfo_hz / rx.freq * 1e6, 3)} ppm of RX frequency` : 'Shown when locked', lk ? '' : 'dim'],
+  ]);
+  $('rf_info').textContent = on ? `${mhz(rx.freq, 3)} · ${fmt(rx.rs / 1e3, 1)} ksym/s · gain ${fmt(rx.gain, 1)} dB` : '';
 }
 
 function render(s) {
@@ -237,62 +308,62 @@ function render(s) {
     $('tx_gain').value = c.tx_gain; $('rx_gain').value = c.rx_gain;
     cfgLoaded = true;
   }
-  $('sub').textContent = `USRP B210 · FPGA ${s.fpga.version} · ${c.modcod}${c.pilots ? ' 導頻' : ''} · roll-off ${c.rolloff}`;
+  $('sub').textContent = `USRP B210 · FPGA ${s.fpga.version} · ${c.modcod}${c.pilots ? ' pilots' : ''} · roll-off ${c.rolloff}`;
   const lp = $('lockpill');
-  lp.textContent = rx.on ? (rx.lock ? 'RX 鎖定' : 'RX 未鎖定') : 'RX 關閉';
+  lp.textContent = rx.on ? (rx.lock ? 'RX locked' : 'RX not locked') : 'RX off';
   lp.className = 'pill ' + (!rx.on ? '' : rx.lock ? 'ok' : 'bad');
   showOnOff('tx', tx.on); showOnOff('rx', rx.on);
   $('send').disabled = uploading || !(tx.on && rx.on);
-  $('send').title = (tx.on && rx.on) ? '' : '請先開啟 TX 和 RX';
-  stat('tx_stat', [
-    ['資料率（每 0.5 秒）', tx.on ? `<span class="big">${bps(tx.rate_bps)}</span>` : '—'],
-    ['MODCOD 容量', tx.on ? usage(tx.rate_bps, tx.capacity_bps) : '—'],
-    ['中心頻率', mhz(tx.freq, 6)],
-    ['符號率', fmt(tx.rs / 1e3, 1) + ' ksym/s'],
-    ['取樣率 / master clock', fmt(tx.fs / 1e6, 4) + ' / ' + fmt(tx.mcr / 1e6, 3) + ' MHz'],
-    ['類比濾波器頻寬', mhz(tx.analog_bw, 3)],
-    ['增益', fmt(tx.gain, 1) + ' dB'],
-    ['資料來源', tx.mode === 'file' ? '檔案 ' + tx.file : 'PRBS-23（FPGA）'],
-    ['已編碼 / 已送幀', fmt(tx.frames_encoded) + ' / ' + fmt(tx.frames_sent)],
-    ['Dummy 幀', fmt(tx.dummy)],
-    ['欠載 DUC / USB', fmt(tx.duc_underflow) + ' / ' + fmt(tx.host_underflow), tx.host_underflow ? 'result bad' : ''],
+  $('send').title = (tx.on && rx.on) ? '' : 'Turn on TX and RX first';
+  renderRf(rx);
+  stat('tx_rf', [
+    ['Center frequency', mhz(tx.freq, 6)],
+    ['Symbol rate', fmt(tx.rs / 1e3, 1) + ' ksym/s'],
+    ['Sample rate / master clock', fmt(tx.fs / 1e6, 4) + ' / ' + fmt(tx.mcr / 1e6, 3) + ' MHz'],
+    ['Analog filter bandwidth', mhz(tx.analog_bw, 3)],
+    ['Gain', fmt(tx.gain, 1) + ' dB'],
+  ]);
+  stat('rx_rf', [
+    ['Center frequency', mhz(rx.freq, 6)],
+    ['Symbol rate', fmt(rx.rs / 1e3, 1) + ' ksym/s'],
+    ['Analog filter bandwidth', mhz(rx.analog_bw, 3)],
+    ['Gain', fmt(rx.gain, 1) + ' dB'],
+  ]);
+  stat('tx_bb', [
+    ['Data rate (every 0.5 s)', tx.on ? bps(capRate(tx.rate_bps, tx.capacity_bps)) : '—'],
+    ['MODCOD capacity', tx.on ? usage(tx.rate_bps, tx.capacity_bps) : '—'],
+    ['Data source', tx.mode === 'file' ? 'File ' + tx.file : 'PRBS-23 (FPGA)'],
+    ['Frames encoded / sent', fmt(tx.frames_encoded) + ' / ' + fmt(tx.frames_sent)],
+    ['Dummy frames', fmt(tx.dummy)],
+    ['Underflow DUC / USB', fmt(tx.duc_underflow) + ' / ' + fmt(tx.host_underflow), tx.host_underflow ? 'result bad' : ''],
   ]);
   const ber = rx.ber_bits ? rx.ber_errors / rx.ber_bits : NaN;
-  stat('rx_stat', [
-    ['解碼速率（每 0.5 秒）', rx.on ? `<span class="big">${bps(rx.lock ? rx.rate_bps : 0)}</span>` +
-       (rx.frames_per_s != null ? `<br>${fmt(rx.lock ? rx.frames_per_s : 0, 1)} 幀/秒` : '') : '—'],
-    ['MODCOD 容量', rx.on && rx.lock ? usage(rx.rate_bps, rx.capacity_bps) : '—'],
-    ['SNR Es/N0（估計）', rx.esn0_db != null ? `<span class="big">${fmt(rx.esn0_db, 1)} dB</span>` : '—'],
-    ['Eb/N0（每資訊位元）', rx.ebn0_db != null ? fmt(rx.ebn0_db, 1) + ' dB' : '—'],
-    ['RSSI（AD9361，相對）', rx.rssi_db != null ? fmt(rx.rssi_db, 2) + ' dB' : '—'],
-    ['訊號電平（DDC 輸出）', rx.level_dbfs != null ? fmt(rx.level_dbfs, 1) + ' dBFS' : '—', rx.level_dbfs > -3 ? 'result bad' : ''],
-    ['頻率偏移 (CFO)', rx.lock ? `<span class="big">${fmt(rx.cfo_hz, 1)} Hz</span>` : '—'],
-    ['狀態', !rx.on ? '關閉' : rx.lock ? `鎖定 · ${rx.modcod}${rx.pilots ? ' 導頻' : ''} · FLL ${rx.fll_stage}` : '搜尋中', !rx.on ? '' : rx.lock ? 'result ok' : 'result bad'],
-    ['中心頻率', mhz(rx.freq, 6)],
-    ['符號率', fmt(rx.rs / 1e3, 1) + ' ksym/s'],
-    ['類比濾波器頻寬', mhz(rx.analog_bw, 3)],
-    ['增益', fmt(rx.gain, 1) + ' dB'],
-    ['幀 / 漏失 / PLS 失敗', `${fmt(rx.frames)} / ${fmt(rx.misses)} / ${fmt(rx.pls_fail)}`],
-    ['LDPC 迭代 / 丟棄', `${rx.ldpc_iters} / ${fmt(rx.ldpc_drop)}`],
-    ['BCH 更正 / 失敗', `${fmt(rx.bch_corr)} / ${fmt(rx.bch_fail)}`, rx.bch_fail ? 'result bad' : ''],
-    ['BBFRAME 正確 / CRC 錯', `${fmt(rx.bb_ok)} / ${fmt(rx.bb_crc)}`],
-    ['BER', rx.mode === 'prbs' ? (rx.ber_lock ? `${ber.toExponential(2)} (${fmt(rx.ber_errors)}/${fmt(rx.ber_bits)})` : '未同步') : '檔案模式'],
-    ['USB 溢位', fmt(rx.host_overflow), rx.host_overflow ? 'result bad' : ''],
+  stat('rx_bb', [
+    ['Decode rate (every 0.5 s)', rx.on ? bps(rx.lock ? capRate(rx.rate_bps, rx.capacity_bps) : 0) +
+       (rx.frames_per_s != null ? ` · ${fmt(rx.lock ? rx.frames_per_s : 0, 1)} frames/s` : '') : '—'],
+    ['MODCOD capacity', rx.on && rx.lock ? usage(rx.rate_bps, rx.capacity_bps) : '—'],
+    ['State', !rx.on ? 'Off' : rx.lock ? `Locked · ${rx.modcod}${rx.pilots ? ' pilots' : ''} · FLL ${rx.fll_stage}` : 'Searching', !rx.on ? '' : rx.lock ? 'result ok' : 'result bad'],
+    ['Frames / missed / PLS fail', `${fmt(rx.frames)} / ${fmt(rx.misses)} / ${fmt(rx.pls_fail)}`],
+    ['LDPC iterations / dropped', `${rx.ldpc_iters} / ${fmt(rx.ldpc_drop)}`],
+    ['BCH corrected / failed', `${fmt(rx.bch_corr)} / ${fmt(rx.bch_fail)}`, rx.bch_fail ? 'result bad' : ''],
+    ['BBFRAME OK / CRC error', `${fmt(rx.bb_ok)} / ${fmt(rx.bb_crc)}`],
+    ['BER', rx.mode === 'prbs' ? (rx.ber_lock ? `${ber.toExponential(2)} (${fmt(rx.ber_errors)}/${fmt(rx.ber_bits)})` : 'Not synced') : 'File mode'],
+    ['USB overflow', fmt(rx.host_overflow), rx.host_overflow ? 'result bad' : ''],
   ]);
-  const fs = ['等待檔頭', '接收中', '完成'][rx.file_state] || '—';
+  const fs = ['Waiting for header', 'Receiving', 'Done'][rx.file_state] || '—';
   const res = rx.result || '';
   stat('file_stat', tx.mode === 'file' ? [
-    ['傳送檔案', tx.file],
-    ['TX 已送出位元組', fmt(tx.bytes) + (tx.done ? '（完成）' : '')],
-    ['RX 狀態', fs],
-    ['RX 已寫入', `${fmt(rx.file_written)} / ${fmt(rx.file_len)} B`],
-    ['TX 送出速率', tx.done ? '—' : bps(tx.host_bps, true)],
-    ['RX 寫入速率', rx.file_state === 1 ? bps(rx.file_bps, true) : '—'],
-    ['預估剩餘時間', rx.file_state === 1 && rx.file_len && rx.file_bps > 0 ? dur((rx.file_len - rx.file_written) * 8 / rx.file_bps) : '—'],
-    ['序號缺漏', fmt(rx.seq_gaps), rx.seq_gaps ? 'result bad' : ''],
-    ['比對結果', res || '—', res.startsWith('identical') ? 'result ok' : res ? 'result bad' : ''],
-  ] : [['模式', (tx.on && rx.on) ? 'PRBS 測試（選檔案後按「傳送檔案」開始檔案回環）' : '傳檔需要先開啟 TX 和 RX'],
-        ...(res ? [['訊息', res, 'result bad']] : [])]);
+    ['File', tx.file],
+    ['TX bytes sent', fmt(tx.bytes) + (tx.done ? ' (done)' : '')],
+    ['RX state', fs],
+    ['RX written', `${fmt(rx.file_written)} / ${fmt(rx.file_len)} B`],
+    ['TX send rate', tx.done ? '—' : bps(tx.host_bps, true)],
+    ['RX write rate', rx.file_state === 1 ? bps(rx.file_bps, true) : '—'],
+    ['Time remaining (est.)', rx.file_state === 1 && rx.file_len && rx.file_bps > 0 ? dur((rx.file_len - rx.file_written) * 8 / rx.file_bps) : '—'],
+    ['Sequence gaps', fmt(rx.seq_gaps), rx.seq_gaps ? 'result bad' : ''],
+    ['Comparison', res || '—', res.startsWith('identical') ? 'result ok' : res ? 'result bad' : ''],
+  ] : [['Mode', (tx.on && rx.on) ? 'PRBS test (choose a file and press "Send file" to start a file loopback)' : 'File transfer needs TX and RX on'],
+        ...(res ? [['Message', res, 'result bad']] : [])]);
   $('prog').value = rx.file_len ? rx.file_written / rx.file_len : 0;
   addRatePoint(rx);
   $('dl').style.display = rx.file_state === 2 ? '' : 'none';
@@ -318,7 +389,7 @@ function drawSpectrum(sp) {
   }
   if (!db.length) {
     g.textAlign = 'center';
-    g.fillText(last && !last.rx.on ? 'RX 已關閉' : last && !last.fpga.spectrum ? '沒有頻譜資料（FPGA image 需 2.1 版以上）' : '等待頻譜資料…',
+    g.fillText(last && !last.rx.on ? 'RX is off' : last && !last.fpga.spectrum ? 'No spectrum data (needs FPGA image 2.1 or later)' : 'Waiting for spectrum data…',
                L + pw / 2, T + ph / 2);
     $('spec_info').textContent = '';
     return;
@@ -346,12 +417,12 @@ function drawSpectrum(sp) {
   g.strokeStyle = css.getPropertyValue('--plot-line'); g.lineWidth = 1.4; g.stroke();
   g.lineTo(L + pw, T + ph); g.lineTo(L, T + ph); g.closePath();
   g.fillStyle = css.getPropertyValue('--plot-fill'); g.fill();
-  $('spec_info').textContent = `中心 ${(sp.fc / 1e6).toFixed(3)} MHz · 跨度 ${(span / 1e6).toFixed(3)} MHz · dBFS（x 軸：相對中心頻率 MHz）`;
+  $('spec_info').textContent = `Center ${(sp.fc / 1e6).toFixed(3)} MHz · span ${(span / 1e6).toFixed(3)} MHz · dBFS (x axis: MHz from center)`;
 }
 
 // ---- RX decode-rate history: one point per 0.5 s server interval (rx.rate_time changes)
 const RATE_SPAN = 120;                     // seconds shown
-const rateHist = [];                       // {t: ms (browser clock), bps, fps, cap}
+const rateHist = [];                       // {t: ms (browser clock), bps, pct (0-100), fps, cap}
 let rateKey = null, rateHover = -1;
 function addRatePoint(rx) {
   if (rx.rate_time === undefined) return;            // older program: no history
@@ -360,7 +431,9 @@ function addRatePoint(rx) {
   rateKey = key;
   if (!rx.on || !rx.rate_interval) return;           // RX off / first interval of a session: no point
   const lock = rx.lock;
-  rateHist.push({t: Date.now(), bps: lock ? rx.rate_bps : 0, fps: lock ? rx.frames_per_s : 0, cap: lock ? rx.capacity_bps : 0});
+  const cap = lock ? rx.capacity_bps : 0;
+  rateHist.push({t: Date.now(), bps: lock ? capRate(rx.rate_bps, cap) : 0, pct: lock ? capPct(rx.rate_bps, cap) : 0,
+                 fps: lock ? rx.frames_per_s : 0, cap});
   while (rateHist.length && rateHist[0].t < Date.now() - (RATE_SPAN + 5) * 1000) {
     rateHist.shift();
     if (rateHover >= 0) rateHover--;                 // keep the hovered point under the crosshair
@@ -368,19 +441,12 @@ function addRatePoint(rx) {
   drawRate();
   if ($('rate_tbl').open) fillRateTable();
 }
-function niceStep(v) {                     // 1 / 2 / 2.5 / 5 x 10^n at or above v
-  const e = Math.pow(10, Math.floor(Math.log10(v)));
-  for (const m of [1, 2, 2.5, 5, 10]) if (m * e >= v) return m * e;
-  return 10 * e;
-}
-function axisUnit(max) { return max >= 1e6 ? [1e6, 'Mbit/s'] : max >= 1e3 ? [1e3, 'kbit/s'] : [1, 'bit/s']; }
 function rateGeom() {
   const cv = $('rate'), W = cv.clientWidth, H = cv.clientHeight;
   const L = 56, R = 96, T = 12, B = 26;
   const now = Date.now();
   const cap = rateHist.length ? rateHist[rateHist.length - 1].cap : 0;
-  const top = Math.max(cap, ...rateHist.map(p => p.bps)) * 1.08 || 1e6;
-  const step = niceStep(top / 4), ymax = Math.ceil(top / step) * step;   // round ticks: 0, step, 2 step, ...
+  const ymax = 100, step = 25;               // fixed 0-100 % of the MODCOD capacity
   return {W, H, L, R, T, B, pw: W - L - R, ph: H - T - B, now, cap, ymax, step,
           x: t => L + (1 - (now - t) / (RATE_SPAN * 1000)) * (W - L - R),
           y: v => T + (1 - v / ymax) * (H - T - B)};
@@ -394,36 +460,31 @@ function drawRate() {
   const css = getComputedStyle(document.documentElement);
   const G = rateGeom(), {L, T, pw, ph} = G;
   g.fillStyle = css.getPropertyValue('--plot-bg'); g.fillRect(0, 0, W, H);
-  const [div, unit] = axisUnit(G.ymax);
   // grid + axes (hairline, recessive)
   g.strokeStyle = css.getPropertyValue('--plot-grid'); g.lineWidth = 1;
   g.fillStyle = '#8b949e'; g.font = '11px system-ui'; g.textAlign = 'right'; g.textBaseline = 'middle';
-  const dec = G.step / div >= 1 ? 0 : G.step / div >= 0.1 ? 1 : 2;
-  for (let v = 0; v <= G.ymax * 1.0001; v += G.step) {
+  for (let v = 0; v <= G.ymax; v += G.step) {
     const y = Math.round(G.y(v)) + 0.5;
     g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke();
-    g.fillText(fmt(v / div, dec), L - 6, y);
+    g.fillText(v + ' %', L - 6, y);
   }
-  g.save(); g.translate(12, T + ph / 2); g.rotate(-Math.PI / 2); g.textAlign = 'center'; g.fillText(unit, 0, 0); g.restore();
   g.textAlign = 'center'; g.textBaseline = 'top';
   for (let s = 0; s <= RATE_SPAN; s += 20) {
     const x = Math.round(L + (1 - s / RATE_SPAN) * pw) + 0.5;
     g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
-    g.fillText(s ? `−${s} s` : '現在', x, T + ph + 6);
+    g.fillText(s ? `−${s} s` : 'now', x, T + ph + 6);
   }
   const pts = rateHist.filter(p => G.now - p.t <= RATE_SPAN * 1000);
   if (!pts.length) {
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(last && !last.rx.on ? 'RX 已關閉' : '等待資料…', L + pw / 2, T + ph / 2);
+    g.fillText(last && !last.rx.on ? 'RX is off' : 'Waiting for data…', L + pw / 2, T + ph / 2);
     $('rate_info').textContent = '';
     return;
   }
-  // capacity reference (MODCOD at the current symbol rate)
+  // 100 % = MODCOD capacity at the current symbol rate
   if (G.cap > 0) {
-    const y = Math.round(G.y(G.cap)) + 0.5;
-    g.strokeStyle = '#8b949e'; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke(); g.setLineDash([]);
-    g.fillStyle = '#8b949e'; g.textAlign = 'left'; g.textBaseline = 'bottom';
-    g.fillText('MODCOD 容量 ' + bps(G.cap), L + 6, y - 3);
+    g.fillStyle = '#8b949e'; g.textAlign = 'left'; g.textBaseline = 'top';
+    g.fillText('100 % = MODCOD capacity ' + bps(G.cap), L + 6, T + 4);
   }
   // area wash + 2px line (gap where the series is interrupted > 1.5 s)
   const line = css.getPropertyValue('--plot-line');
@@ -434,28 +495,28 @@ function drawRate() {
   }
   for (const r of runs) {
     g.beginPath();
-    r.forEach((p, i) => i ? g.lineTo(G.x(p.t), G.y(p.bps)) : g.moveTo(G.x(p.t), G.y(p.bps)));
+    r.forEach((p, i) => i ? g.lineTo(G.x(p.t), G.y(p.pct)) : g.moveTo(G.x(p.t), G.y(p.pct)));
     g.lineWidth = 2; g.lineJoin = 'round'; g.lineCap = 'round'; g.strokeStyle = line; g.stroke();
     g.lineTo(G.x(r[r.length - 1].t), G.y(0)); g.lineTo(G.x(r[0].t), G.y(0)); g.closePath();
     g.fillStyle = 'rgba(88,166,255,.10)'; g.fill();
   }
   // end dot with surface ring + end label (text in ink, not the series color)
-  const e = pts[pts.length - 1], ex = G.x(e.t), ey = G.y(e.bps);
+  const e = pts[pts.length - 1], ex = G.x(e.t), ey = G.y(e.pct);
   g.beginPath(); g.arc(ex, ey, 6, 0, 2 * Math.PI); g.fillStyle = css.getPropertyValue('--plot-bg'); g.fill();
   g.beginPath(); g.arc(ex, ey, 4, 0, 2 * Math.PI); g.fillStyle = line; g.fill();
   g.fillStyle = '#e6edf3'; g.font = '600 12px system-ui'; g.textAlign = 'left'; g.textBaseline = 'middle';
-  g.fillText(bps(e.bps), ex + 10, Math.min(Math.max(ey, T + 6), T + ph - 6));
+  g.fillText(fmt(e.pct, 0) + ' %', ex + 10, Math.min(Math.max(ey, T + 6), T + ph - 6));
   // crosshair for the hovered / focused point
   const h = rateHover >= 0 && rateHover < rateHist.length ? rateHist[rateHover] : null;
   if (h && G.now - h.t <= RATE_SPAN * 1000) {
-    const hx = Math.round(G.x(h.t)) + 0.5, hy = G.y(h.bps);
+    const hx = Math.round(G.x(h.t)) + 0.5, hy = G.y(h.pct);
     g.strokeStyle = '#8b949e'; g.lineWidth = 1; g.beginPath(); g.moveTo(hx, T); g.lineTo(hx, T + ph); g.stroke();
     g.beginPath(); g.arc(hx, hy, 6, 0, 2 * Math.PI); g.fillStyle = css.getPropertyValue('--plot-bg'); g.fill();
     g.beginPath(); g.arc(hx, hy, 4, 0, 2 * Math.PI); g.fillStyle = line; g.fill();
   }
   showRateTip();
-  const avg = pts.reduce((a, p) => a + p.bps, 0) / pts.length;
-  $('rate_info').textContent = `目前 ${bps(e.bps)} · ${fmt(e.fps, 1)} 幀/秒 · 圖中平均 ${bps(avg)}`;
+  const avg = pts.reduce((a, p) => a + p.pct, 0) / pts.length;
+  $('rate_info').textContent = `Now ${fmt(e.pct, 0)} % (${bps(e.bps)}) · ${fmt(e.fps, 1)} frames/s · chart average ${fmt(avg, 0)} %`;
 }
 function tipTime(t) { return new Date(t).toLocaleTimeString(undefined, {hour12: false}); }
 function showRateTip() {
@@ -467,10 +528,10 @@ function showRateTip() {
   const row = (cls, text) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = text; return d; };
   const top = document.createElement('div');
   const key = document.createElement('span'); key.className = 'k';
-  const v = document.createElement('span'); v.className = 'v'; v.textContent = bps(h.bps);
+  const v = document.createElement('span'); v.className = 'v'; v.textContent = fmt(h.pct, 0) + ' %';
   top.append(key, v);
-  tip.append(top, row('', `${fmt(h.fps, 1)} 幀/秒` + (h.cap > 0 ? ` · 容量 ${fmt(100 * h.bps / h.cap, 0)} %` : '')),
-             row('m', `RX 解碼速率 · ${tipTime(h.t)}（${fmt((G.now - h.t) / 1000, 1)} 秒前）`));
+  tip.append(top, row('', `${bps(h.bps)} · ${fmt(h.fps, 1)} frames/s`),
+             row('m', `RX decode rate · ${tipTime(h.t)} (${fmt((G.now - h.t) / 1000, 1)} s ago)`));
   tip.style.display = 'block';
   const x = G.x(h.t), wrapW = $('rate').clientWidth, tw = tip.offsetWidth;
   tip.style.left = (x + 12 + tw <= wrapW ? x + 12 : Math.max(0, x - 12 - tw)) + 'px';   // flip left near the right edge
@@ -506,7 +567,7 @@ function fillRateTable() {
   tb.replaceChildren();
   for (const p of rateHist.slice(-20).reverse()) {
     const tr = document.createElement('tr');
-    for (const v of [tipTime(p.t), bps(p.bps), fmt(p.fps, 1), p.cap > 0 ? fmt(100 * p.bps / p.cap, 0) + ' %' : '—']) {
+    for (const v of [tipTime(p.t), fmt(p.pct, 0) + ' %', bps(p.bps), fmt(p.fps, 1)]) {
       const td = document.createElement('td'); td.textContent = v; tr.append(td);
     }
     tb.append(tr);
@@ -523,9 +584,9 @@ async function poll() {
     const [s, sp] = await Promise.all([fetch('/api/status').then(r => r.json()), fetch('/api/spectrum').then(r => r.json())]);
     if (s.tx) { last = s; render(s); }
     drawSpectrum(sp);
-    $('conn').textContent = '已連線'; $('conn').className = 'pill ok';
+    $('conn').textContent = 'Connected'; $('conn').className = 'pill ok';
   } catch (e) {
-    $('conn').textContent = '中斷'; $('conn').className = 'pill bad';
+    $('conn').textContent = 'Disconnected'; $('conn').className = 'pill bad';
   }
   setTimeout(poll, Math.max(0, POLL_MS - (performance.now() - t0)));
 }

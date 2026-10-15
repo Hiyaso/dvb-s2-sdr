@@ -487,6 +487,62 @@ static std::vector<float> power_spectrum(const std::vector<std::complex<float>>&
     return p;
 }
 
+// root-raised-cosine impulse response, t in symbols
+static double rrc(double t, double a)
+{
+    if (std::fabs(t) < 1e-9) return 1.0 - a + 4.0 * a / M_PI;
+    if (std::fabs(std::fabs(t) - 0.25 / a) < 1e-9)
+        return a / std::sqrt(2.0) * ((1 + 2 / M_PI) * std::sin(M_PI / (4 * a)) + (1 - 2 / M_PI) * std::cos(M_PI / (4 * a)));
+    return (std::sin(M_PI * t * (1 - a)) + 4 * a * t * std::cos(M_PI * t * (1 + a)))
+           / (M_PI * t * (1 - 16 * a * a * t * t));
+}
+
+// Blind SNR estimate for the web page (M2M4, valid for constant-modulus PSK: PLHEADER, pilots,
+// QPSK and 8PSK data).  x: DDC samples at 2 samples/symbol.  The RRC matched filter is evaluated
+// at 16 timing phases; the phase with the lowest normalised fourth moment kappa = M4 / M2^2 is the
+// best sampling instant.  kappa = 1: no noise, 2: noise only;  Es/N0 = s / (1 - s), s = sqrt(2 - kappa).
+// Independent of carrier phase and CFO, so it needs no synchronisation.
+static double psk_kappa(const std::vector<std::complex<float>>& x, double alpha)
+{
+    const int span = 8;                                // matched filter +-8 symbols
+    const int ns   = int(x.size()) / 2;
+    if (ns <= 2 * span + 16) return NAN;
+    double best = NAN;
+    for (int p = 0; p < 16; p++) {
+        double c[4 * span + 1];                        // y(k + p/16) = sum_m x[2k + m] h(p/16 - m/2)
+        for (int m = -2 * span; m <= 2 * span; m++) c[m + 2 * span] = rrc(p / 16.0 - m / 2.0, alpha);
+        double m2 = 0, m4 = 0;
+        int cnt = 0;
+        for (int k = span; k < ns - span; k++) {
+            std::complex<double> y = 0;
+            for (int m = -2 * span; m <= 2 * span; m++)
+                y += std::complex<double>(x[2 * k + m].real(), x[2 * k + m].imag()) * c[m + 2 * span];
+            const double e = std::norm(y);
+            m2 += e;
+            m4 += e * e;
+            cnt++;
+        }
+        m2 /= cnt;
+        m4 /= cnt;
+        if (m2 > 0 && !(m4 / (m2 * m2) >= best)) best = m4 / (m2 * m2);
+    }
+    return best;
+}
+static double esn0_db_of_kappa(double kappa)
+{
+    if (!(kappa < 2.0)) return NAN;                    // noise only (or no data)
+    const double s = std::sqrt(2.0 - kappa);           // signal power / total power
+    return s >= 0.9999 ? 40.0 : std::min(40.0, 10.0 * std::log10(s / (1.0 - s)));
+}
+// JSON number, null when not finite
+static std::string jnum(double v, int digits = 2)
+{
+    if (!std::isfinite(v)) return "null";
+    char b[32];
+    snprintf(b, sizeof b, "%.*f", digits, v);
+    return b;
+}
+
 // ---------------------------------------------------------------- run-time configuration
 struct Config {
     double tx_freq = 0, rx_freq = 0;
@@ -1075,6 +1131,20 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         ~ThreadGuard() { join(); }
     } snap_guard{snap_thread};
     double update_ms = 0;                      // time of the last status + spectrum read (USB register access)
+    // real-time data rates: counter differences over fixed 0.5 s intervals, recomputed every 0.5 s
+    const double RATE_INTERVAL = 0.5;
+    struct RateSample {
+        double t;
+        uint64_t tx_frames, tx_bytes, rx_bb_ok, rx_written;
+    };
+    RateSample rate_mark{};
+    std::chrono::steady_clock::time_point rate_t0;
+    double tx_rate = 0, tx_host = 0, rx_rate = 0, rx_fps = 0, rx_file = 0, rate_dt = 0;
+    double snr_t = 0;                          // time of the last SNR capture (smoothing time constant 0.5 s)
+    // RX level / SNR: smoothed over the last captures (about 1 s), restarted with each session
+    double esn0_avg = NAN, level_avg = NAN, rssi_db = NAN;   // Es/N0 averaged in dB
+    std::chrono::steady_clock::time_point snr_t0;
+    bool has_rssi = true;
     auto update_web = [&](const std::vector<uint32_t>& s) {
         // spectrum: latest 1024-sample capture (Hann window, dBFS)
         if (!S.do_rx) spec_db.clear();                    // RX off: no spectrum
@@ -1090,16 +1160,65 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
                 std::lock_guard<std::mutex> l(snap_m);
                 x.swap(snap_x);
             }
+            const double tnow = std::chrono::duration<double>(std::chrono::steady_clock::now() - S.t0).count();
+            if (snr_t0 != S.t0) esn0_avg = level_avg = NAN, snr_t = tnow;
+            snr_t0 = S.t0;
             if (x.size() == size_t(CAP_N)) {                // one FFT per update, no averaging
                 spec_db  = power_spectrum(x);
                 spec_fs  = S.fs_act;
                 spec_fc  = act.rx_freq;
+                // SNR and level: exponential average with a 0.5 s time constant
+                // (10 captures/s in PRBS mode, ~3 snapshots/s in file mode)
+                const double e1 = esn0_db_of_kappa(psk_kappa(x, alpha));   // NaN: noise only
+                double pw = 0;
+                for (const auto& v : x) pw += std::norm(v);
+                pw /= double(x.size());
+                const double w = 1.0 - std::exp(-std::max(0.0, tnow - snr_t) / 0.5);
+                snr_t = tnow;
+                if (std::isfinite(e1)) esn0_avg = std::isfinite(esn0_avg) ? esn0_avg + w * (e1 - esn0_avg) : e1;
+                level_avg = std::isfinite(level_avg) ? level_avg + w * (pw - level_avg) : pw;
+            }
+            // AD9361 RSSI (dB, 0.25 dB steps, relative: not calibrated to dBm)
+            if (has_rssi) {
+                try {
+                    rssi_db = usrp->get_rx_sensor("rssi", 0).to_real();
+                } catch (const std::exception&) {
+                    has_rssi = false;
+                    rssi_db  = NAN;
+                }
             }
         }
         const uint32_t w0   = s[0];
         const bool lock     = (w0 >> 4) & 1;
         const int mc        = (w0 >> 5) & 31;
         const uint64_t bits = (uint64_t(s[15] & 0xFFFF) << 32) | s[14];
+        // data rates (bit/s).  Payload per BBFRAME = DFL = Kbch - 80 bits; TX counts data frames
+        // only (no dummy frames), RX (decode rate) counts BBFRAMEs with a good header CRC.
+        const double tx_dfl = kbch_of(cfg.modcod) - 80;
+        const int rx_dfl_hw = s[13] & 0xFFFF;              // DFL of the last received BBHEADER
+        const double rx_dfl = rx_dfl_hw ? rx_dfl_hw : std::max(0, kbch_of(mc) - 80);
+        const double tx_cap = tx_dfl / frame_symbols(cfg.modcod, cfg.pilots) * S.rs_tx;
+        const double rx_cap = kbch_of(mc) ? (kbch_of(mc) - 80.0) / frame_symbols(mc, (w0 >> 10) & 1) * S.rs_rx : 0;
+        const RateSample cur{std::chrono::duration<double>(std::chrono::steady_clock::now() - S.t0).count(), s[18],
+            S.tst->bytes, s[10], S.rst->file_written};
+        if (rate_t0 != S.t0 || cur.tx_frames < rate_mark.tx_frames || cur.tx_bytes < rate_mark.tx_bytes
+            || cur.rx_bb_ok < rate_mark.rx_bb_ok || cur.rx_written < rate_mark.rx_written) {
+            rate_mark = cur;                               // new session or statistics cleared: restart
+            tx_rate = tx_host = rx_rate = rx_fps = rx_file = rate_dt = 0;
+        } else if (cur.t - rate_mark.t >= RATE_INTERVAL) {
+            const double dt = cur.t - rate_mark.t;
+            tx_rate  = double(cur.tx_frames - rate_mark.tx_frames) * tx_dfl / dt;
+            tx_host  = double(cur.tx_bytes - rate_mark.tx_bytes) * 8 / dt;
+            rx_fps   = double(cur.rx_bb_ok - rate_mark.rx_bb_ok) / dt;      // decoded BBFRAMEs per second
+            rx_rate  = rx_fps * rx_dfl;
+            rx_file  = double(cur.rx_written - rate_mark.rx_written) * 8 / dt;
+            rate_dt  = dt;
+            rate_mark = cur;
+        }
+        rate_t0 = S.t0;
+        const double esn0 = S.do_rx ? esn0_avg : NAN;
+        const double ebn0 = lock && rx_cap > 0 ? esn0 - 10.0 * std::log10(rx_cap / S.rs_rx) : NAN;   // per information bit
+        const double level_dbfs = S.do_rx && level_avg > 0 ? 10.0 * std::log10(level_avg / (32767.0 * 32767.0)) : NAN;
         std::ostringstream j;
         j.precision(10);
         j << "{\"fpga\":{\"version\":\"" << (s[31] >> 16) << "." << (s[31] & 0xFFFF) << "\",\"spectrum\":"
@@ -1115,7 +1234,8 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
           << ",\"mcr\":" << act.mcr << ",\"frames_encoded\":" << s[17] << ",\"frames_sent\":" << s[18]
           << ",\"dummy\":" << s[19] << ",\"duc_underflow\":" << s[26] << ",\"host_underflow\":" << S.tst->underflows
           << ",\"mode\":" << jstr(S.tx_data ? "file" : "prbs") << ",\"file\":" << jstr(S.in_name)
-          << ",\"bytes\":" << S.tst->bytes << ",\"done\":" << (S.tst->pad_done ? "true" : "false") << "},";
+          << ",\"bytes\":" << S.tst->bytes << ",\"done\":" << (S.tst->pad_done ? "true" : "false")
+          << ",\"capacity_bps\":" << tx_cap << ",\"rate_bps\":" << tx_rate << ",\"host_bps\":" << tx_host << "},";
         j << "\"rx\":{\"on\":" << (S.do_rx ? "true" : "false") << ",\"freq\":" << act.rx_freq << ",\"rs\":" << S.rs_rx
           << ",\"fs\":" << act.fs_rx << ",\"gain\":" << act.rx_gain << ",\"analog_bw\":" << act.rx_abw
           << ",\"lock\":" << (lock ? "true" : "false") << ",\"modcod\":" << jstr(MODCOD_NAME[mc <= 16 ? mc : 11])
@@ -1129,6 +1249,10 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
           << ",\"mode\":" << jstr(S.rx_data ? "file" : "prbs") << ",\"file_state\":" << S.rst->file_state
           << ",\"file_len\":" << (S.rst->file_len == LEN_UNKNOWN ? 0 : S.rst->file_len.load())
           << ",\"file_written\":" << S.rst->file_written << ",\"seq_gaps\":" << S.rst->file_gaps
+          << ",\"capacity_bps\":" << rx_cap << ",\"rate_bps\":" << rx_rate << ",\"frames_per_s\":" << rx_fps
+          << ",\"file_bps\":" << rx_file << ",\"rate_interval\":" << rate_dt << ",\"rate_time\":" << rate_mark.t
+          << ",\"rssi_db\":" << jnum(S.do_rx ? rssi_db : NAN) << ",\"level_dbfs\":" << jnum(level_dbfs)
+          << ",\"esn0_db\":" << jnum(esn0) << ",\"ebn0_db\":" << jnum(ebn0)
           << ",\"result\":" << jstr(S.result) << "}}";
         std::ostringstream sp;
         sp.precision(10);

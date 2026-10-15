@@ -23,6 +23,7 @@ sim/run_all.sh                       # 完整回歸（約 40 分鐘）
 * Vivado（Z7020 bitstream、XSim）和 ISE 14.7（B210 FPGA image）要自己從 AMD 下載安裝，用之前先
   `source <安裝路徑>/settings64.sh`。
 * 這是一個 git repo（`git log` 可看紀錄）；模擬和建置的輸出都在 `.gitignore` 裡，不會進版控。
+* `CLAUDE.md` 是給 Claude Code 的專案說明（指令、回歸測試、RTL 修改規則），在 repo 裡執行 `claude` 會自動讀取。
 
 ## 架構
 

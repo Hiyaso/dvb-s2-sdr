@@ -1,0 +1,94 @@
+# CLAUDE.md
+
+DVB-S2 baseband modem (ETSI EN 302 307-1), TX + RX, **short FECFRAME (16200) only**,
+QPSK 1/4–8/9 and 8PSK 3/5–8/9, pilots on/off, roll-off 0.35/0.25/0.20.
+One Verilog-2001 code base, two targets:
+
+* **Zynq-7020** (PYNQ-Z2 / Zybo Z7-20): PL loopback TX → channel emulator → RX, PS controls it over AXI-Lite. Vivado.
+* **USRP B210** (Spartan-6 XC6SLX150): modem inside UHD's `radio_legacy`, between the host stream and DUC/DDC. ISE 14.7.
+
+The owner (Jacky) works in satellite / RF. Answer in Traditional Chinese (English if he writes in English), concise, result first.
+README.md and b210/README.md are user-facing docs in Traditional Chinese; keep them in sync when behaviour changes.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `rtl/tx/` | `dvbs2_tx` (BBFRAME+CRC-8, BB scrambler, BCH, LDPC IRA, 8PSK interleave, PL framer + pilots + Gold scrambler, RRC 33-tap 2 sps) |
+| `rtl/rx/` | `dvbs2_rx` (AGC, matched filter + Gardner/Farrow timing, frame sync + PLS + 3-stage FLL + phase/DD-PLL in `rx_frame*`, demap, layered min-sum LDPC P=45, BCH BM+Chien, BB out) |
+| `rtl/common/` | `fir_sym33`, `cordic`, `ram_sdp`, `sample_pacer` |
+| `rtl/gen/` | **generated** ROM / parameter modules – never edit by hand |
+| `rtl/top/` | Z7020 top: `dvbs2_loopback_top`, `dvbs2_regs` (AXI-Lite), `ch_emu` |
+| `rtl/b210/` | `dvbs2_b210` wrapper (user-settings regs, payload bytes inside IQ samples) + FIFO |
+| `python/` | reference models: `dvbs2_ref` (TX golden), `sync_model`, `frame_model`, `ldpc_fixed` (bit-exact LDPC), `bch_hw_model`, `run_e2e.py`, `gen_rtl_roms.py` |
+| `sim/` | Verilator/iverilog testbenches (`sim/tb/`) and regression scripts; outputs go to `sim/out/` (large, git-ignored) |
+| `sim/ber/` | BER harness: C++ TX/AWGN/demap + Verilated RTL LDPC/BCH |
+| `vivado/`, `vitis/`, `sw/` | Z7020 project scripts, PYNQ driver, bare-metal demo |
+| `b210/` | `patch_uhd_fpga.py`, `build_fpga.sh` (ISE), `host/dvbs2_b210.cpp` (UHD C++ PC program) |
+| `doc/register_map.md` | AXI-Lite register map (B210 register map is in b210/README.md) |
+
+## Commands
+
+```bash
+./setup_ubuntu.sh [--check] [--no-uhd]      # deps (Verilator >= 5.006, iverilog, numpy, UHD)
+
+# regressions (Verilator, run from anywhere)
+sim/reg_tx.sh          # TX vs Python golden, all MODCOD x pilots x roll-off, ~2 min, expect pass=30 fail=0
+sim/reg_ldpc.sh        # LDPC bit-exact vs ldpc_fixed, expect 16 PASS
+sim/reg_bch.sh         # BCH decoder
+sim/reg_fec.sh         # demap + LDPC + BCH chain
+sim/reg_rxfe.sh        # AGC + timing recovery
+sim/reg_sys.sh [quick|full]   # full loopback; full = 10 scenarios (CFO up to 2 % Rs, ±50 ppm, no pilots, roll-offs)
+sim/reg_b210.sh        # two dvbs2_b210 boards + channel (defines DVBS2_FIR_FOLD, SPARTAN6)
+sim/run_all.sh [full]  # all of the above, ~40 min (+1 h for full)
+sim/vl.sh <tb_top> <outdir> [-Gparam=val ...]   # build one testbench
+
+python3 python/run_e2e.py -h                 # algorithm-level end-to-end model
+python3 python/gen_rtl_roms.py               # regenerate rtl/gen/*.v from dvbs2_ref tables
+cd sim/ber && ./build.sh && python3 ber_sweep.py -j 2 4 13   # BER curves
+
+# Vivado (source <Vivado>/settings64.sh first)
+cd vivado && vivado -mode batch -source create_project.tcl -tclargs pynq-z2   # or zybo-z7-20 / generic
+vivado -mode batch -source build.tcl                                         # synth + impl + bitstream
+vivado -mode batch -source sim.tcl -tclargs tb_sys MODCOD=4 NOISE=8953 CFO=4294967 PPM_STEP=85899
+
+# B210
+b210/host/build.sh                                   # PC program -> b210/host/build/dvbs2_b210
+ISE_SETTINGS=/opt/Xilinx/14.7/ISE_DS/settings64.sh b210/build_fpga.sh   # 1-2 h, needs LX150 licence
+```
+
+Long jobs (`run_all.sh`, Vivado/ISE builds, BER sweeps) should run in the background with logs.
+
+## Rules for changing the RTL
+
+* **Bit-exact with the Python models.** TX must match `dvbs2_ref`; LDPC must match `ldpc_fixed`; BCH must match `bch_hw_model`. Change the model and the RTL together and rerun the matching regression.
+* **Verilog-2001, synthesizable by Vivado *and* XST (ISE, Spartan-6):**
+  one `always` block per array/memory; flattened vectors instead of arrays of vectors on ports and in generate loops;
+  no parameter-valued attributes; byte-write RAM only through `ram_sdp_be4` under `SPARTAN6`.
+* `` `ifdef DVBS2_FIR_FOLD `` = folded FIR (3 multipliers per rail, 6 clocks/output) for the B210 DSP48A1 budget;
+  `` `ifdef SPARTAN6 `` = XST RAM templates. The Z7020 build uses neither. Both variants must stay bit-exact
+  (reg_tx with and without FIR_FOLD).
+* Timing budget: **≥ 8 clocks per sample** (DIV ≥ 8 on Z7020, master clock ≥ 8 × sample rate on B210);
+  the RX timing loop pipeline needs ≥ 6. LDPC P=45 keeps up with 25 iterations at 16 clocks/symbol.
+* `rtl/gen/*.v` comes from `python/gen_rtl_roms.py`; edit the generator, not the output.
+* Before saying a change works, run at least the regression that covers it (reg_tx / reg_ldpc / reg_fec / reg_sys quick / reg_b210)
+  and report pass/fail counts. Testbenches print `PASS`/`FAIL`.
+
+## B210 specifics
+
+* UHD source used to build the FPGA image must be the **same version** as the UHD installed on the PCs (FPGA compat number);
+  `build_fpga.sh` clones tag `v$(uhd_config_info --version)`. Patch verified on UHD 4.1.0.5 / 4.6.0.0 / 4.8.0.0.
+* `patch_uhd_fpga.py` is idempotent (patches from `*.orig`, marker `DVBS2-PATCH`); new make target `B210_DVBS2`.
+* Host ↔ FPGA: user settings regs (device arg `enable_user_regs`, `poke32(4*n)`, `peek64(8*m)` → status words 2m/2m+1, ID word 30 = 0x44564232).
+  Payload bytes ride in sc16 samples: TX `I[8]` valid + `I[7:0]` byte; RX `I[9]` frame end, `I[8]` valid, `I[7:0]` byte, `Q` = 16-bit seq.
+* File mode: TX sends `--preamble` seconds of zeros, then header (magic `A5 'DVBS2' 5A C3`, u64 len, ~len), then the file; RX writes only after the header and stops after len bytes.
+* RX decodes MODCOD/pilots from the PLHEADER; only roll-off (and Rs, frequency) must match TX.
+* Not yet run: ISE synthesis/timing and real hardware. If the user sends `b200.syr` / `b200.twr`, start from those.
+
+## Known environment gotchas
+
+* Verilator must be ≥ 5.006 (`--binary --timing`); Ubuntu 22.04's package is too old (setup script builds v5.020).
+* Windows + Vivado XSim: if `NoDefaultCurrentDirectoryInExePath` is set, `compile.bat` "is not recognized";
+  `vivado/sim.tcl` clears it, in the GUI run `unset env(NoDefaultCurrentDirectoryInExePath)` first.
+* ISE 14.7 on new Ubuntu: run with bash (not dash), may need libncurses5, may need to rename ISE's bundled libstdc++.
+* `sim/out/` grows to several GB; it is git-ignored and safe to delete.

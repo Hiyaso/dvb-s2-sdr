@@ -1,0 +1,6 @@
+# QPSK 3/4 short frame, Kbch=11712, RTL ldpc_dec(P=45, max_iter=25)+bch_dec, ideal sync
+# EsN0_dB  EbN0_dB  frames  bit_err      bits        BER        frame_err  FER        bch_fail  avg_iter
+   3.90     2.30     154       8331      1803648  4.619e-03      51     3.312e-01      51    20.5
+   4.00     2.40     720       6134      8432640  7.274e-04      50     6.944e-02      50    15.8
+   4.10     2.50    1710       1144     20027520  5.712e-05      13     7.602e-03      13    12.6
+   4.20     2.60    1710          0     20027520  0.000e+00       0     0.000e+00       0    10.3

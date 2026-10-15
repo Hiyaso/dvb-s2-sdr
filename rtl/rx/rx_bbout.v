@@ -139,7 +139,9 @@ always @(posedge clk) begin
             end else if (bidx == 4'd9) begin
                 bidx    <= 4'd10;
                 crc_bad <= (crc != d);
-                dcnt    <= dfl[15:3];
+                // a header with a bad CRC has no usable DFL: drop the frame's data field;
+                // otherwise limit DFL to the largest data field (Kbch 14232 - 80 bits)
+                dcnt    <= (crc != d) ? 13'd0 : (dfl[15:3] > 13'd1769) ? 13'd1769 : dfl[15:3];
                 ldcnt   <= 5'd23; ferr <= 16'd0; fbits <= 16'd0;
             end else begin
                 // data field byte
@@ -147,7 +149,7 @@ always @(posedge clk) begin
                     dcnt    <= dcnt - 13'd1;
                     m_valid <= 1'b1;
                     m_data  <= d;
-                    m_last  <= (dcnt == 13'd1);
+                    m_last  <= (dcnt == 13'd1) || i_last;    // tlast at the latest on the frame's last byte
                     // BER measurement
                     ps <= ps_n; ldcnt <= ldcnt_n;
                     pa_v <= 1'b1; pa_e <= nerr; pa_c <= nchk;

@@ -12,6 +12,10 @@
 //   RX  DDC samples --> dvbs2_rx --> decoded data-field bytes
 //                   --(rx_data=0)--> host (I/Q samples, as usual)
 //       (rx_data=1)  bytes --> host: I = {6'b0, last, valid, byte}, Q = byte counter
+//  Spectrum snapshot: writing register 8 with bit 0 set captures 1024 consecutive
+//  DDC samples (before the modem); status word 29 bit 31 = done, bit 30 = busy.
+//  rb_addr[7] = 1 reads the capture: 64-bit word {rb_addr[6:0]} of page reg8[9:8]
+//  = samples 2w (low half) and 2w+1 (high half), each {I, Q}.
 //
 // Control: UHD user settings registers (multi_usrp::get_user_settings_iface(0),
 // device argument "enable_user_regs"):  poke32(4*n, value) writes register n,
@@ -40,7 +44,7 @@ module dvbs2_b210 #(
     output wire [31:0] rx_host_sample
 );
 localparam [31:0] ID      = 32'h44564232;   // "DVB2"
-localparam [31:0] VERSION = 32'h00020000;   // 2.0 (B210)
+localparam [31:0] VERSION = 32'h00020001;   // 2.1 (B210, spectrum snapshot)
 
 // ---------------------------------------------------------------- registers
 localparam [31:0] D_CTRL  = 32'h0000_01C0;  // pll_en, agc_en, early_stop
@@ -52,12 +56,16 @@ localparam [31:0] D_FLL   = {12'd0, 4'd12, 4'd6, 4'd1, 4'd1, 4'd1};
 localparam [31:0] D_FEC   = {5'd0, 3'd0, 2'd0, 6'd25, 8'd16, 8'd24};
 reg [31:0] r_ctrl, r_txcfg, r_agc, r_tim, r_fs, r_fll, r_fec;
 reg        clr;
+reg  [1:0] cap_page;
+reg        cap_start;
 always @(posedge clk) begin
     if (rst) begin
         r_ctrl <= D_CTRL; r_txcfg <= D_TXCFG; r_agc <= D_AGC; r_tim <= D_TIM;
         r_fs <= D_FS; r_fll <= D_FLL; r_fec <= D_FEC; clr <= 1'b0;
+        cap_page <= 2'd0; cap_start <= 1'b0;
     end else begin
         clr <= 1'b0;
+        cap_start <= 1'b0;
         if (set_stb) case (set_addr)
             8'd0: r_ctrl  <= set_data;
             8'd1: r_txcfg <= set_data;
@@ -67,6 +75,7 @@ always @(posedge clk) begin
             8'd5: r_fll   <= set_data;
             8'd6: r_fec   <= set_data;
             8'd7: clr     <= 1'b1;
+            8'd8: begin cap_page <= set_data[9:8]; cap_start <= set_data[0]; end
             default: ;
         endcase
     end
@@ -175,6 +184,36 @@ end
 assign rx_host_sample = !(rx_data && rx_en) ? rx_ddc_sample :
                         ob_empty ? {16'd0, ob_seq} : {6'd0, ob_dout[8], 1'b1, ob_dout[7:0], ob_seq};
 
+// ---------------------------------------------------------------- spectrum snapshot
+reg        cap_busy, cap_done;
+reg [9:0]  cap_cnt;
+reg [31:0] cap_first;
+reg        cap_we;
+reg [8:0]  cap_waddr;
+reg [63:0] cap_wdata;
+wire [63:0] cap_q;
+always @(posedge clk) begin
+    if (rst) begin
+        cap_busy <= 1'b0; cap_done <= 1'b0; cap_cnt <= 10'd0; cap_first <= 32'd0;
+        cap_we <= 1'b0; cap_waddr <= 9'd0; cap_wdata <= 64'd0;
+    end else begin
+        cap_we <= 1'b0;
+        if (cap_start) begin
+            cap_busy <= 1'b1; cap_done <= 1'b0; cap_cnt <= 10'd0;
+        end else if (cap_busy && rx_strobe && rx_run) begin
+            cap_cnt <= cap_cnt + 10'd1;
+            if (!cap_cnt[0]) cap_first <= rx_ddc_sample;
+            else begin
+                cap_we <= 1'b1; cap_waddr <= cap_cnt[9:1]; cap_wdata <= {rx_ddc_sample, cap_first};
+            end
+            if (cap_cnt == 10'd1023) begin cap_busy <= 1'b0; cap_done <= 1'b1; end
+        end
+    end
+end
+ram_sdp #(.DW(64), .AW(9)) u_capram (
+    .clk(clk), .we(cap_we), .waddr(cap_waddr), .wdata(cap_wdata),
+    .re(1'b1), .raddr({cap_page, rb_addr[6:0]}), .rdata(cap_q));
+
 // ---------------------------------------------------------------- wrapper counters
 reg [31:0] c_txbytes, c_txovf, c_rxbytes, c_ducuf, c_rxsamp, c_txsamp;
 always @(posedge clk) begin
@@ -222,8 +261,8 @@ assign status[25*32 +: 32] = c_rxbytes;
 assign status[26*32 +: 32] = c_ducuf;
 assign status[27*32 +: 32] = c_rxsamp;
 assign status[28*32 +: 32] = c_txsamp;
-assign status[29*32 +: 32] = r_ctrl;
+assign status[29*32 +: 32] = {cap_done, cap_busy, r_ctrl[29:0]};
 assign status[30*32 +: 32] = ID;
 assign status[31*32 +: 32] = VERSION;
-always @(posedge clk) rb_data <= status[rb_addr[3:0]*64 +: 64];
+always @(posedge clk) rb_data <= rb_addr[7] ? cap_q : status[rb_addr[3:0]*64 +: 64];
 endmodule

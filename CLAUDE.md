@@ -77,13 +77,16 @@ Long jobs (`run_all.sh`, Vivado/ISE builds, BER sweeps) should run in the backgr
 ## B210 specifics
 
 * UHD source used to build the FPGA image must be the **same version** as the UHD installed on the PCs (FPGA compat number);
-  `build_fpga.sh` clones tag `v$(uhd_config_info --version)`. Patch verified on UHD 4.1.0.5 / 4.6.0.0 / 4.8.0.0.
+  `build_fpga.sh` clones tag `v$(uhd_config_info --version)`. Patch verified on UHD 4.1.0.5 / 4.6.0.0 / 4.8.0.0 / 4.11.0.0.
 * `patch_uhd_fpga.py` is idempotent (patches from `*.orig`, marker `DVBS2-PATCH`); new make target `B210_DVBS2`.
 * Host ↔ FPGA: user settings regs (device arg `enable_user_regs`, `poke32(4*n)`, `peek64(8*m)` → status words 2m/2m+1, ID word 30 = 0x44564232).
   Payload bytes ride in sc16 samples: TX `I[8]` valid + `I[7:0]` byte; RX `I[9]` frame end, `I[8]` valid, `I[7:0]` byte, `Q` = 16-bit seq.
 * File mode: TX sends `--preamble` seconds of zeros, then header (magic `A5 'DVBS2' 5A C3`, u64 len, ~len), then the file; RX writes only after the header and stops after len bytes.
 * RX decodes MODCOD/pilots from the PLHEADER; only roll-off (and Rs, frequency) must match TX.
-* Not yet run: ISE synthesis/timing and real hardware. If the user sends `b200.syr` / `b200.twr`, start from those.
+* Built with ISE 14.7 against UHD 4.11.0.0 (routes, timing met: 54.7k LUT / 79 % slices / 88 % BRAM / 86 % DSP) and
+  verified on a real B210 in `--web` trx mode. Image is **single-radio** (radio 1 removed to make room).
+  Area is tight: the first build failed routing at 92 % slices until the PLS FHT became the streaming `rx_pls_wht`.
+* ISE licence: FLEXnet reads the host ID only from `eth0`; on this VM a dummy `eth0` with the licence MAC is needed (lost on reboot).
 
 ## Known environment gotchas
 

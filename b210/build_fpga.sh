@@ -7,7 +7,9 @@
 #   image (UHD checks the FPGA compatibility number).  Without an argument the script
 #   clones the tag of the installed UHD (uhd_config_info --version) into ./uhd-src.
 # * ISE: set ISE_SETTINGS if ISE is not in /opt/Xilinx/14.7/ISE_DS/settings64.sh.
-#   The XC6SLX150 (B210) is not covered by the free WebPACK license.
+#   The XC6SLX150 (B210) is not covered by the free WebPACK license: it needs e.g. an
+#   ISE Embedded / Logic / System Edition license.  All *.lic files in ~/.Xilinx are used
+#   (XILINXD_LICENSE_FILE), and ISE 14.7 takes the host ID from the interface named eth0.
 # Result: ./out/usrp_b210_dvbs2_fpga.bin
 set -e -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -17,12 +19,29 @@ ISE_SETTINGS=${ISE_SETTINGS:-/opt/Xilinx/14.7/ISE_DS/settings64.sh}
 if [ ! -d "$UHD_SRC/fpga/usrp3" ]; then
   VER=$(uhd_config_info --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   [ -n "$VER" ] || { echo "cannot determine the installed UHD version (uhd_config_info); pass a UHD source dir"; exit 1; }
-  echo "installed UHD $VER -> cloning tag v$VER"
-  git clone --depth 1 --branch "v$VER" https://github.com/EttusResearch/uhd.git "$UHD_SRC"
+  echo "installed UHD $VER -> UHD source v$VER"
+  if command -v git > /dev/null; then
+    git clone --depth 1 --branch "v$VER" https://github.com/EttusResearch/uhd.git "$UHD_SRC"
+  else
+    mkdir -p "$UHD_SRC"
+    curl -fL "https://github.com/EttusResearch/uhd/archive/refs/tags/v$VER.tar.gz" | tar -xz -C "$UHD_SRC" --strip-components=1
+  fi
 fi
+command -v make > /dev/null || { echo "make not found: sudo apt install make"; exit 1; }
 python3 "$HERE/patch_uhd_fpga.py" "$UHD_SRC"
 
 [ -f "$ISE_SETTINGS" ] || { echo "ISE settings not found: $ISE_SETTINGS (set ISE_SETTINGS=...)"; exit 1; }
+# license files: every *.lic in ~/.Xilinx (file names may contain spaces)
+if [ -z "$XILINXD_LICENSE_FILE" ]; then
+  LICS=""
+  for f in "$HOME"/.Xilinx/*.lic; do [ -f "$f" ] && LICS="${LICS:+$LICS:}$f"; done
+  [ -n "$LICS" ] && export XILINXD_LICENSE_FILE="$LICS"
+fi
+# ISE 14.7's FLEXnet reads the host ID only from an interface called eth0
+if ! ip link show eth0 > /dev/null 2>&1; then
+  echo "WARNING: no network interface 'eth0': ISE cannot read the license host ID."
+  echo "  e.g.  sudo ip link add eth0 type dummy && sudo ip link set eth0 address <MAC of the license> && sudo ip link set eth0 up"
+fi
 # ISE's settings script needs bash; it prints a lot, keep it quiet
 source "$ISE_SETTINGS" > /dev/null
 command -v xtclsh > /dev/null || { echo "xtclsh not found after sourcing $ISE_SETTINGS"; exit 1; }
@@ -30,6 +49,7 @@ command -v xtclsh > /dev/null || { echo "xtclsh not found after sourcing $ISE_SE
 cd "$UHD_SRC/fpga/usrp3/top/b200"
 echo "building B210_DVBS2 (this takes 1-2 hours) ..."
 touch "$HERE/build_fpga.log.start"
+rm -rf build-B210_DVBS2          # a failed run leaves stale/empty outputs behind
 make B210_DVBS2 2>&1 | tee "$HERE/build_fpga.log" || true
 mkdir -p "$HERE/out"
 B=build-B210_DVBS2

@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DVB-S2 B210</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --fg: #1c2330; --muted: #677285; --line: #dde1e8;
+  --accent: #1f6feb; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700;
+  --plot-bg: #0f1722; --plot-grid: #273244; --plot-line: #58a6ff; --plot-fill: rgba(88,166,255,.18);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0d1117; --card: #161b22; --fg: #e6edf3; --muted: #8b949e; --line: #30363d;
+          --accent: #4493f8; --ok: #3fb950; --bad: #f85149; --warn: #d29922; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line);
+         background: var(--card); position: sticky; top: 0; z-index: 2; }
+header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+header .sub { color: var(--muted); font-size: 13px; }
+header .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); }
+.pill.ok { color: var(--ok); border-color: var(--ok); }
+.pill.bad { color: var(--bad); border-color: var(--bad); }
+.pill.warn { color: var(--warn); border-color: var(--warn); }
+main { padding: 16px 20px 32px; display: grid; gap: 16px; grid-template-columns: 1fr 1fr; max-width: 1280px; margin: 0 auto; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.card h2 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+.wide { grid-column: 1 / -1; }
+.form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: end; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+input[type=number] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+                     background: var(--bg); color: var(--fg); font: inherit; font-variant-numeric: tabular-nums; }
+input[type=number]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent);
+         color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 12px; }
+dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 14px; margin: 12px 0 0; }
+dl div { min-width: 0; }
+dt { font-size: 12px; color: var(--muted); }
+dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 550; overflow-wrap: anywhere; }
+.big { font-size: 22px; font-weight: 650; }
+canvas { width: 100%; height: 300px; display: block; border-radius: 8px; background: var(--plot-bg); }
+.filebox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+progress { width: 100%; height: 10px; }
+.onoff { margin-left: auto; min-width: 74px; padding: 4px 12px; border-radius: 999px; font-size: 13px;
+         background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.onoff::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                 background: var(--muted); margin-right: 6px; vertical-align: 1px; }
+.onoff.on { color: #fff; background: var(--ok); border-color: var(--ok); }
+.onoff.on::before { background: #fff; }
+.card.off dl { opacity: .45; }
+.result.ok { color: var(--ok); font-weight: 650; }
+.result.bad { color: var(--bad); font-weight: 650; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } .form { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>DVB-S2 回環測試</h1>
+  <span class="sub" id="sub">USRP B210</span>
+  <div class="right"><span class="pill" id="conn">連線中…</span><span class="pill" id="lockpill">RX —</span></div>
+</header>
+<main>
+  <section class="card off" id="tx_card">
+    <h2>TX 發射 <button class="onoff" id="tx_onoff" onclick="toggle('tx')" aria-pressed="false">關閉</button></h2>
+    <div class="form">
+      <div><label for="tx_freq">頻率 (MHz)</label><input id="tx_freq" type="number" step="0.001"></div>
+      <div><label for="tx_bw">頻寬 (MHz)</label><input id="tx_bw" type="number" step="0.001" min="0.1" max="5.2"></div>
+      <div><label for="tx_gain">增益 (dB)</label><input id="tx_gain" type="number" step="0.5" min="0" max="89.75"></div>
+    </div>
+    <div class="actions"><button onclick="apply('tx')">套用 TX</button>
+      <span class="hint" id="tx_hint"></span></div>
+    <dl id="tx_stat"></dl>
+  </section>
+
+  <section class="card off" id="rx_card">
+    <h2>RX 接收 <button class="onoff" id="rx_onoff" onclick="toggle('rx')" aria-pressed="false">關閉</button></h2>
+    <div class="form">
+      <div><label for="rx_freq">頻率 (MHz)</label><input id="rx_freq" type="number" step="0.001"></div>
+      <div><label for="rx_bw">頻寬 (MHz)</label><input id="rx_bw" type="number" step="0.001" min="0.1" max="5.2"></div>
+      <div><label for="rx_gain">增益 (dB)</label><input id="rx_gain" type="number" step="0.5" min="0" max="76"></div>
+    </div>
+    <div class="actions"><button onclick="apply('rx')">套用 RX</button>
+      <span class="hint" id="rx_hint"></span></div>
+    <dl id="rx_stat"></dl>
+  </section>
+
+  <section class="card wide">
+    <h2>接收頻譜 <span class="hint" id="spec_info"></span></h2>
+    <canvas id="spec"></canvas>
+  </section>
+
+  <section class="card wide">
+    <h2>檔案回環測試</h2>
+    <div class="filebox">
+      <input type="file" id="file">
+      <button id="send" onclick="sendFile()">傳送檔案</button>
+      <span class="hint" id="up_hint"></span>
+      <button class="ghost" onclick="post('/api/prbs')">回到 PRBS 測試</button>
+      <a id="dl" class="hint" href="/api/received" style="display:none">下載收到的檔案</a>
+    </div>
+    <dl id="file_stat"></dl>
+    <div style="margin-top:10px"><progress id="prog" max="1" value="0"></progress></div>
+    <p class="hint">頻寬 = 佔用頻寬 Rs·(1+roll-off)，符號率由頻寬換算。改頻寬會重新啟動串流（傳到一半的檔案會重送）；頻率和增益即時生效。</p>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let cfgLoaded = false, last = null;
+
+function fmt(v, d = 0) { return (v === undefined || v === null || isNaN(v)) ? '—' : Number(v).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d}); }
+function mhz(v, d = 3) { return fmt(v / 1e6, d) + ' MHz'; }
+function stat(el, rows) {
+  $(el).innerHTML = rows.map(([k, v, cls]) => `<div><dt>${k}</dt><dd class="${cls || ''}">${v}</dd></div>`).join('');
+}
+async function post(url, body) {
+  try {
+    const r = await fetch(url, {method: 'POST', body});
+    return r.ok;
+  } catch (e) { return false; }
+}
+async function apply(side) {
+  const p = new URLSearchParams();
+  p.set(side + '_freq', $(side + '_freq').value * 1e6);
+  p.set(side + '_bw', $(side + '_bw').value * 1e6);
+  p.set(side + '_gain', $(side + '_gain').value);
+  $(side + '_hint').textContent = (await post('/api/config', p)) ? '已送出' : '失敗';
+  setTimeout(() => $(side + '_hint').textContent = '', 2500);
+}
+// TX / RX on-off (off when the program starts); the button follows the state reported by the program
+const busy = {tx: 0, rx: 0};
+async function toggle(side) {
+  if (!last || busy[side]) return;
+  const want = !last[side].on;
+  busy[side] = performance.now();
+  busy[side + '_want'] = want;
+  $(side + '_onoff').disabled = true;
+  $(side + '_onoff').textContent = want ? '開啟中…' : '關閉中…';
+  const p = new URLSearchParams();
+  p.set(side + '_on', want ? 1 : 0);
+  if (!(await post('/api/config', p))) { busy[side] = 0; $(side + '_hint').textContent = '失敗'; }
+}
+function showOnOff(side, on) {
+  const b = $(side + '_onoff');
+  if (busy[side]) {                                     // wait until the program reports the new state
+    if (on !== busy[side + '_want'] && performance.now() - busy[side] < 8000) return;
+    busy[side] = 0;
+  }
+  b.disabled = false;
+  b.className = 'onoff' + (on ? ' on' : '');
+  b.textContent = on ? '開啟' : '關閉';
+  b.setAttribute('aria-pressed', on);
+  b.title = on ? '按一下關閉' : '按一下開啟';
+  $(side + '_card').classList.toggle('off', !on);
+}
+const MAX_UPLOAD = 2 * 1024 ** 3;          // must match MAX_UPLOAD in dvbs2_b210.cpp
+let uploading = false;
+function sendFile() {
+  if (last && !(last.tx.on && last.rx.on)) { alert('請先開啟 TX 和 RX'); return; }
+  const f = $('file').files[0];
+  if (!f) { alert('先選擇要傳送的檔案'); return; }
+  if (f.size > MAX_UPLOAD) { alert(`檔案太大：${fmt(f.size / 1048576, 1)} MB，上限 2048 MB`); return; }
+  if (f.size === 0) { alert('檔案是空的'); return; }
+  uploading = true;
+  $('send').disabled = true;
+  const done = msg => {
+    uploading = false;
+    $('send').disabled = false;
+    $('up_hint').textContent = '';
+    if (msg) alert('上傳失敗：' + msg);
+  };
+  const x = new XMLHttpRequest();
+  x.open('POST', '/api/send?name=' + encodeURIComponent(f.name));
+  x.upload.onprogress = e => {
+    if (e.lengthComputable) $('up_hint').textContent = `上傳中 ${(100 * e.loaded / e.total).toFixed(0)} %`;
+  };
+  x.onload = () => {
+    if (x.status === 200) return done('');
+    let m = x.responseText;
+    try { m = JSON.parse(m).error || m; } catch (e) {}
+    done(`HTTP ${x.status} ${m}`);
+  };
+  x.onerror = () => done('連線中斷（檔案無法讀取，或程式沒有回應）');
+  x.ontimeout = () => done('逾時');
+  x.send(f);
+}
+
+function render(s) {
+  const tx = s.tx, rx = s.rx, c = s.config;
+  if (!cfgLoaded) {
+    for (const k of ['tx_freq', 'rx_freq', 'tx_bw', 'rx_bw']) $(k).value = (c[k] / 1e6).toFixed(3);
+    $('tx_gain').value = c.tx_gain; $('rx_gain').value = c.rx_gain;
+    cfgLoaded = true;
+  }
+  $('sub').textContent = `USRP B210 · FPGA ${s.fpga.version} · ${c.modcod}${c.pilots ? ' 導頻' : ''} · roll-off ${c.rolloff}`;
+  const lp = $('lockpill');
+  lp.textContent = rx.on ? (rx.lock ? 'RX 鎖定' : 'RX 未鎖定') : 'RX 關閉';
+  lp.className = 'pill ' + (!rx.on ? '' : rx.lock ? 'ok' : 'bad');
+  showOnOff('tx', tx.on); showOnOff('rx', rx.on);
+  $('send').disabled = uploading || !(tx.on && rx.on);
+  $('send').title = (tx.on && rx.on) ? '' : '請先開啟 TX 和 RX';
+  stat('tx_stat', [
+    ['中心頻率', mhz(tx.freq, 6)],
+    ['符號率', fmt(tx.rs / 1e3, 1) + ' ksym/s'],
+    ['取樣率 / master clock', fmt(tx.fs / 1e6, 4) + ' / ' + fmt(tx.mcr / 1e6, 3) + ' MHz'],
+    ['類比濾波器頻寬', mhz(tx.analog_bw, 3)],
+    ['增益', fmt(tx.gain, 1) + ' dB'],
+    ['資料來源', tx.mode === 'file' ? '檔案 ' + tx.file : 'PRBS-23（FPGA）'],
+    ['已編碼 / 已送幀', fmt(tx.frames_encoded) + ' / ' + fmt(tx.frames_sent)],
+    ['Dummy 幀', fmt(tx.dummy)],
+    ['欠載 DUC / USB', fmt(tx.duc_underflow) + ' / ' + fmt(tx.host_underflow), tx.host_underflow ? 'result bad' : ''],
+  ]);
+  const ber = rx.ber_bits ? rx.ber_errors / rx.ber_bits : NaN;
+  stat('rx_stat', [
+    ['頻率偏移 (CFO)', rx.lock ? `<span class="big">${fmt(rx.cfo_hz, 1)} Hz</span>` : '—'],
+    ['狀態', !rx.on ? '關閉' : rx.lock ? `鎖定 · ${rx.modcod}${rx.pilots ? ' 導頻' : ''} · FLL ${rx.fll_stage}` : '搜尋中', !rx.on ? '' : rx.lock ? 'result ok' : 'result bad'],
+    ['中心頻率', mhz(rx.freq, 6)],
+    ['符號率', fmt(rx.rs / 1e3, 1) + ' ksym/s'],
+    ['類比濾波器頻寬', mhz(rx.analog_bw, 3)],
+    ['增益', fmt(rx.gain, 1) + ' dB'],
+    ['幀 / 漏失 / PLS 失敗', `${fmt(rx.frames)} / ${fmt(rx.misses)} / ${fmt(rx.pls_fail)}`],
+    ['LDPC 迭代 / 丟棄', `${rx.ldpc_iters} / ${fmt(rx.ldpc_drop)}`],
+    ['BCH 更正 / 失敗', `${fmt(rx.bch_corr)} / ${fmt(rx.bch_fail)}`, rx.bch_fail ? 'result bad' : ''],
+    ['BBFRAME 正確 / CRC 錯', `${fmt(rx.bb_ok)} / ${fmt(rx.bb_crc)}`],
+    ['BER', rx.mode === 'prbs' ? (rx.ber_lock ? `${ber.toExponential(2)} (${fmt(rx.ber_errors)}/${fmt(rx.ber_bits)})` : '未同步') : '檔案模式'],
+    ['USB 溢位', fmt(rx.host_overflow), rx.host_overflow ? 'result bad' : ''],
+  ]);
+  const fs = ['等待檔頭', '接收中', '完成'][rx.file_state] || '—';
+  const res = rx.result || '';
+  stat('file_stat', tx.mode === 'file' ? [
+    ['傳送檔案', tx.file],
+    ['TX 已送出位元組', fmt(tx.bytes) + (tx.done ? '（完成）' : '')],
+    ['RX 狀態', fs],
+    ['RX 已寫入', `${fmt(rx.file_written)} / ${fmt(rx.file_len)} B`],
+    ['序號缺漏', fmt(rx.seq_gaps), rx.seq_gaps ? 'result bad' : ''],
+    ['比對結果', res || '—', res.startsWith('identical') ? 'result ok' : res ? 'result bad' : ''],
+  ] : [['模式', (tx.on && rx.on) ? 'PRBS 測試（選檔案後按「傳送檔案」開始檔案回環）' : '傳檔需要先開啟 TX 和 RX'],
+        ...(res ? [['訊息', res, 'result bad']] : [])]);
+  $('prog').value = rx.file_len ? rx.file_written / rx.file_len : 0;
+  $('dl').style.display = rx.file_state === 2 ? '' : 'none';
+}
+
+function drawSpectrum(sp) {
+  const cv = $('spec'), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement);
+  g.fillStyle = css.getPropertyValue('--plot-bg'); g.fillRect(0, 0, W, H);
+  const L = 48, R = 12, T = 10, B = 26, pw = W - L - R, ph = H - T - B;
+  const db = sp.db || [];
+  const top = 0, bot = -110;
+  g.strokeStyle = css.getPropertyValue('--plot-grid'); g.lineWidth = 1;
+  g.fillStyle = '#8b949e'; g.font = '11px system-ui'; g.textAlign = 'right'; g.textBaseline = 'middle';
+  for (let v = top; v >= bot; v -= 10) {
+    const y = T + (top - v) / (top - bot) * ph;
+    g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke();
+    if (v % 20 === 0) g.fillText(v + '', L - 6, y);
+  }
+  if (!db.length) {
+    g.textAlign = 'center';
+    g.fillText(last && !last.rx.on ? 'RX 已關閉' : last && !last.fpga.spectrum ? '沒有頻譜資料（FPGA image 需 2.1 版以上）' : '等待頻譜資料…',
+               L + pw / 2, T + ph / 2);
+    $('spec_info').textContent = '';
+    return;
+  }
+  const span = sp.fs, n = db.length;
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  const step = span / 1e6 > 4 ? 1e6 : span / 1e6 > 1.5 ? 0.5e6 : 0.25e6;
+  for (let f = -Math.floor(span / 2 / step) * step; f <= span / 2; f += step) {
+    const x = L + (f / span + 0.5) * pw;
+    g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
+    g.fillText((f / 1e6).toFixed(2), x, T + ph + 6);
+  }
+  // occupied bandwidth of the RX setting
+  if (last) {
+    const bw = last.config.rx_bw;
+    g.fillStyle = 'rgba(210,153,34,.10)';
+    g.fillRect(L + (0.5 - bw / span / 2) * pw, T, bw / span * pw, ph);
+  }
+  g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = L + i / (n - 1) * pw;
+    const y = T + Math.min(Math.max((top - db[i]) / (top - bot), 0), 1) * ph;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.strokeStyle = css.getPropertyValue('--plot-line'); g.lineWidth = 1.4; g.stroke();
+  g.lineTo(L + pw, T + ph); g.lineTo(L, T + ph); g.closePath();
+  g.fillStyle = css.getPropertyValue('--plot-fill'); g.fill();
+  $('spec_info').textContent = `中心 ${(sp.fc / 1e6).toFixed(3)} MHz · 跨度 ${(span / 1e6).toFixed(3)} MHz · dBFS（x 軸：相對中心頻率 MHz）`;
+}
+
+const POLL_MS = 100;                       // 10 Hz refresh
+async function poll() {
+  const t0 = performance.now();
+  try {
+    const [s, sp] = await Promise.all([fetch('/api/status').then(r => r.json()), fetch('/api/spectrum').then(r => r.json())]);
+    if (s.tx) { last = s; render(s); }
+    drawSpectrum(sp);
+    $('conn').textContent = '已連線'; $('conn').className = 'pill ok';
+  } catch (e) {
+    $('conn').textContent = '中斷'; $('conn').className = 'pill bad';
+  }
+  setTimeout(poll, Math.max(0, POLL_MS - (performance.now() - t0)));
+}
+poll();
+</script>
+</body>
+</html>

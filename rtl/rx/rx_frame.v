@@ -210,15 +210,10 @@ reg  signed [31:0] pw, pacc;
 reg  signed [23:0] csr, csi;
 reg  signed [17:0] hzx [0:63];
 reg  signed [17:0] hzy [0:63];
-reg  signed [21:0] sv  [0:63];
 reg  [27:0] sabs;
-reg  signed [27:0] f0 [0:31];
-reg  signed [27:0] f1 [0:31];
-reg  [2:0]  fst;
-reg  [6:0]  mj;
 reg  [27:0] cur_best;
-reg  [4:0]  cur_u;
-reg         cur_p, cur_neg;
+reg  [5:0]  cur_mj;                  // {p, u} of the best |F| (scan order of the original FHT search)
+reg         cur_neg;
 reg  [27:0] bb_abs, bb_sabs;
 reg  [6:0]  bb_plsc;
 reg  [15:0] theta;
@@ -315,6 +310,17 @@ reg  signed [24:0] e3pr, e3pi, e3mr, e3mi, e4pr, e4pi, e4mr, e4mi;
 reg  signed [49:0] e2ppr, e2ppi, e2pmr, e2pmi, e3ppr, e3ppi, e3pmr, e3pmi;
 reg  signed [49:0] e4pp, e4pm;
 reg  signed [24:0] evd_x, evd_y;
+reg         e1m, e2m, e3m, e4m, evd_mode;   // correlator mode of the event (0 search, 1 track)
+// tracking event that arrived while the previous frame was still being processed
+// (e.g. a short DUMMY PLFRAME after a long QPSK frame): kept until S_TRACK takes it
+reg         lt_v, lt_hit;
+reg  [31:0] lt_idx;
+reg  signed [24:0] lt_x, lt_y;
+wire        tev_v   = lt_v || (evd_valid && evd_mode);
+wire        tev_hit = lt_v ? lt_hit : evd_hit;
+wire [31:0] tev_idx = lt_v ? lt_idx : evd_idx;
+wire signed [24:0] tev_x = lt_v ? lt_x : evd_x;
+wire signed [24:0] tev_y = lt_v ? lt_y : evd_y;
 always @(posedge clk) begin
     if (rst) begin
         e1v <= 1'b0; e2v <= 1'b0; e3v <= 1'b0; e4v <= 1'b0; evd_valid <= 1'b0;
@@ -368,12 +374,18 @@ reg  signed [33:0] gq_i, gq_q;
 reg  [1:0]  gq_t;
 reg         pe_v;                    // DD-PLL phase error, registered
 reg  signed [15:0] pe_r;
-reg         e1m, e2m, e3m, e4m, evd_mode;   // correlator mode of the event (0 search, 1 track)
 reg  [31:0] last_at;
-// FHT maximum search pipeline
-reg         fb_v;
-reg  signed [27:0] fbq;
-reg  [5:0]  fb_j;
+// Walsh-Hadamard transform of the 64 PLSC soft values (streaming)
+reg         wh_start, wh_en;
+reg  signed [27:0] wh_x;
+wire        wh_v;
+wire [5:0]  wh_k;
+wire signed [27:0] wh_f;
+rx_pls_wht #(.W(28)) u_wht (.clk(clk), .start(wh_start), .en(wh_en), .x(wh_x),
+    .out_v(wh_v), .out_k(wh_k), .out_f(wh_f));
+// F index k = {u, p} -> search order index {p, u}
+wire [5:0]  wh_mj  = {wh_k[0], wh_k[5:1]};
+wire [27:0] wh_abs = wh_f[27] ? -wh_f : wh_f;
 // output FIFO write port
 reg         ofifo_we;
 reg  [56:0] ofifo_wd;
@@ -406,9 +418,13 @@ always @(posedge clk) begin
         st_state <= 0; st_modcod <= 0; st_type <= 0; st_frames <= 0; st_misses <= 0; st_plsfail <= 0;
         st_stage <= 0; st_gain <= 0; st_plsq <= 0; gain <= 16'd4096; pll_th <= 0; pll_nu <= 0;
         o_code <= 0; o_8psk <= 0; o_meta <= 0; stage <= 0; pace <= 0; badrun <= 0;
-        ofifo_we <= 1'b0; gq_v <= 1'b0; pe_v <= 1'b0; fb_v <= 1'b0; lv1 <= 1'b0; lv2 <= 1'b0; rd3 <= 1'b0; sub <= 2'd0;
+        ofifo_we <= 1'b0; gq_v <= 1'b0; pe_v <= 1'b0; wh_en <= 1'b0; wh_start <= 1'b0; lv1 <= 1'b0; lv2 <= 1'b0; rd3 <= 1'b0; sub <= 2'd0;
         last_dlt <= 32'sd0; last_at <= 32'd0;
+        lt_v <= 1'b0; lt_hit <= 1'b0; lt_idx <= 32'd0; lt_x <= 0; lt_y <= 0;
     end else begin
+        if (evd_valid && evd_mode && st != S_TRACK) begin
+            lt_v <= 1'b1; lt_hit <= evd_hit; lt_idx <= evd_idx; lt_x <= evd_x; lt_y <= evd_y;
+        end
         om_set <= 1'b0;
         pr_v   <= 1'b0;
         pv_v   <= 1'b0;
@@ -424,7 +440,8 @@ always @(posedge clk) begin
         ofifo_we <= 1'b0;
         gq_v   <= 1'b0;
         pe_v   <= 1'b0;
-        fb_v   <= 1'b0;
+        wh_en  <= 1'b0;
+        wh_start <= 1'b0;
         lv1    <= 1'b0;
         // registered buffer data for the reference-block accumulations
         rd3 <= rd2; rd3_tag <= rd2_tag; b3i <= bzi; b3q <= bzq; pgr3 <= pgr;
@@ -435,6 +452,7 @@ always @(posedge clk) begin
         S_SEARCH: begin
             mode_track <= 1'b0;
             pll_nu <= 32'sd0;
+            lt_v <= 1'b0;
             if (evd_valid && !evd_mode) begin
                 ev_i_l <= evd_idx;
                 pv_x <= evd_x; pv_y <= evd_y;      // D = A+B or A-B, whichever is larger
@@ -495,6 +513,7 @@ always @(posedge clk) begin
             4'd4: begin
                 if (vo_v && vo_tag == 4'd14) begin
                     theta <= vo_ang; pcnt <= 7'd0; pcol <= 7'd0; sabs <= 0; pst <= 4'd5;
+                    wh_start <= 1'b1; cur_best <= 0;
                 end
             end
             4'd5: begin   // rotate the 64 PLSC symbols by -theta, soft values
@@ -507,64 +526,26 @@ always @(posedge clk) begin
                     // header index n = 26 + i: even -> Re{y e^{-j pi/4}} ~ x+y ; odd -> y-x
                     fa = pq_tag[0] ? (pq_y - pq_x) : (pq_x + pq_y);
                     if (PSCR[63 - pq_tag[5:0]]) fa = -fa;
-                    sv[pq_tag[5:0]] <= fa;
+                    wh_en <= 1'b1; wh_x <= $signed(fa[21:0]);   // soft values are 22 bits
                     sabs <= sabs + (fa[27] ? -fa : fa);
                     pcol <= pcol + 7'd1;
                     if (pcol == 7'd63) pst <= 4'd6;
                 end
             end
-            4'd6: begin   // pair combination
-                for (i = 0; i < 32; i = i + 1) begin
-                    f0[i] <= sv[2*i] + sv[2*i+1];
-                    f1[i] <= sv[2*i] - sv[2*i+1];
-                end
-                fst <= 3'd0; pst <= 4'd7;
-            end
-            4'd7: begin   // fast Hadamard transform, one stage per clock (constant strides)
-                case (fst)
-                3'd0: for (i = 0; i < 32; i = i + 1) if ((i & 1) == 0) begin
-                          f0[i] <= f0[i] + f0[i + 1];  f0[i + 1] <= f0[i] - f0[i + 1];
-                          f1[i] <= f1[i] + f1[i + 1];  f1[i + 1] <= f1[i] - f1[i + 1];
-                      end
-                3'd1: for (i = 0; i < 32; i = i + 1) if ((i & 2) == 0) begin
-                          f0[i] <= f0[i] + f0[i + 2];  f0[i + 2] <= f0[i] - f0[i + 2];
-                          f1[i] <= f1[i] + f1[i + 2];  f1[i + 2] <= f1[i] - f1[i + 2];
-                      end
-                3'd2: for (i = 0; i < 32; i = i + 1) if ((i & 4) == 0) begin
-                          f0[i] <= f0[i] + f0[i + 4];  f0[i + 4] <= f0[i] - f0[i + 4];
-                          f1[i] <= f1[i] + f1[i + 4];  f1[i + 4] <= f1[i] - f1[i + 4];
-                      end
-                3'd3: for (i = 0; i < 32; i = i + 1) if ((i & 8) == 0) begin
-                          f0[i] <= f0[i] + f0[i + 8];  f0[i + 8] <= f0[i] - f0[i + 8];
-                          f1[i] <= f1[i] + f1[i + 8];  f1[i + 8] <= f1[i] - f1[i + 8];
-                      end
-                default: for (i = 0; i < 16; i = i + 1) begin
-                          f0[i] <= f0[i] + f0[i + 16]; f0[i + 16] <= f0[i] - f0[i + 16];
-                          f1[i] <= f1[i] + f1[i + 16]; f1[i + 16] <= f1[i] - f1[i + 16];
-                      end
-                endcase
-                if (fst == 3'd4) begin pst <= 4'd8; mj <= 7'd0; cur_best <= 0; end
-                fst <= fst + 3'd1;
-            end
-            4'd8: begin   // maximum |F|: select (registered), then compare
-                if (mj < 7'd64) begin
-                    fb_v <= 1'b1; fb_j <= mj[5:0];
-                    fbq <= mj[5] ? f1[mj[4:0]] : f0[mj[4:0]];
-                    mj <= mj + 7'd1;
-                end
-                if (fb_v) begin
-                    if ((fbq[27] ? -fbq : fbq) > cur_best) begin
-                        cur_best <= fbq[27] ? -fbq : fbq;
-                        cur_u <= fb_j[4:0]; cur_p <= fb_j[5]; cur_neg <= fbq[27];
+            4'd6: begin   // flush the transform; maximum |F| (ties: lowest {p, u}, as a sequential scan)
+                wh_en <= 1'b1; wh_x <= 28'sd0;
+                if (wh_v) begin
+                    if (wh_abs > cur_best || (wh_abs == cur_best && wh_abs != 28'd0 && wh_mj < cur_mj)) begin
+                        cur_best <= wh_abs; cur_mj <= wh_mj; cur_neg <= wh_f[27];
                     end
-                    if (fb_j == 6'd63) pst <= 4'd9;
+                    if (wh_k == 6'd63) begin pst <= 4'd9; wh_en <= 1'b0; end
                 end
             end
             4'd9: begin   // keep the best grid point
                 if (cur_best > bb_abs) begin
                     bb_abs  <= cur_best;
                     bb_sabs <= sabs;
-                    bb_plsc <= {cur_u[0], cur_u[1], cur_u[2], cur_u[3], cur_u[4], cur_neg, cur_p};
+                    bb_plsc <= {cur_mj[0], cur_mj[1], cur_mj[2], cur_mj[3], cur_mj[4], cur_neg, cur_mj[5]};
                 end
                 if (pg == 4'd8) pst <= 4'd10;
                 else begin pg <= pg + 4'd1; pst <= 4'd0; end
@@ -596,6 +577,7 @@ always @(posedge clk) begin
             end else if (pls_ok) begin
                 Hn <= ev_i_l - 32'd89;
                 nplsc <= pls_res;
+                exp_end <= ev_i_l + {18'd0, flen(pls_res)};    // watch the next header during S_PROC/S_OUT
                 fpst <= 4'd0;
                 st <= S_PROC;
             end else if (pls_ret == 2'd1) begin
@@ -611,10 +593,11 @@ always @(posedge clk) begin
         // ================================================================ TRACK
         S_TRACK: begin
             mode_track <= 1'b1;
-            if (evd_valid && evd_mode) begin
-                ev_i_l <= evd_idx;
-                if (evd_hit) begin
-                    pv_x <= evd_x; pv_y <= evd_y;
+            if (tev_v) begin
+                lt_v <= 1'b0;
+                ev_i_l <= tev_idx;
+                if (tev_hit) begin
+                    pv_x <= tev_x; pv_y <= tev_y;
                     pv_v <= 1'b1; pv_tag <= 4'd15;
                     st <= S_TRES;
                 end else begin

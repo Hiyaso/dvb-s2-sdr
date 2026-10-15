@@ -2,21 +2,30 @@
 // dvbs2_b210 -- PC side of the DVB-S2 modem running inside the USRP B210 FPGA.
 //
 //   * loads the custom FPGA image (usrp_b210_dvbs2_fpga.bin) when the device is opened
-//   * sets RF (frequency, gain, antenna), master clock and sample rate (2 x symbol rate)
+//   * sets RF (frequency, gain, analog bandwidth, antenna), master clock and sample rate
+//     (2 x symbol rate; symbol rate = bandwidth / (1 + roll-off) or --rs)
 //   * configures the modem through the UHD user-settings registers
 //   * TX: keeps the TX stream running; optional payload bytes from a file / stdin
 //   * RX: reports lock / MODCOD / CFO / FEC / BER once per second; optional payload
 //         bytes to a file / stdout
+//   * --web PORT: web page with TX/RX status, received spectrum and file loopback;
+//         TX/RX frequency, bandwidth and gain can be changed while running
 //
 // Two PCs:   PC1:  dvbs2_b210 --mode tx --fpga usrp_b210_dvbs2_fpga.bin --freq 2.45e9 --rs 1e6
 //            PC2:  dvbs2_b210 --mode rx --fpga usrp_b210_dvbs2_fpga.bin --freq 2.45e9 --rs 1e6
 // One B210: dvbs2_b210 --mode trx ...   (TX on TX/RX A, RX on RX2 A, cable + attenuator)
+//           dvbs2_b210 --web 8080       (trx, 1 GHz, 2 MHz, browser at http://localhost:8080)
 //
 #include <uhd/types/wb_iface.hpp>
 #include <uhd/usrp/multi_usrp.hpp>
 #include <uhd/utils/safe_main.hpp>
 #include <uhd/utils/thread.hpp>
 #include <boost/program_options.hpp>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -25,9 +34,14 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <deque>
+#include <fstream>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -36,13 +50,15 @@ namespace po = boost::program_options;
 
 // ---------------------------------------------------------------- modem registers
 enum : uint32_t {
-    REG_CTRL = 0, REG_TXCFG = 1, REG_AGC = 2, REG_TIM = 3, REG_FS = 4, REG_FLL = 5, REG_FEC = 6, REG_CLR = 7
+    REG_CTRL = 0, REG_TXCFG = 1, REG_AGC = 2, REG_TIM = 3, REG_FS = 4, REG_FLL = 5, REG_FEC = 6, REG_CLR = 7,
+    REG_CAP = 8
 };
 enum : uint32_t {
     CTRL_TX_EN = 1u << 0, CTRL_RX_EN = 1u << 1, CTRL_TX_DATA = 1u << 2, CTRL_RX_DATA = 1u << 3,
     CTRL_PLL = 1u << 6, CTRL_AGC = 1u << 7, CTRL_ES = 1u << 8
 };
 static const uint32_t MODEM_ID = 0x44564232;   // "DVB2"
+static const int CAP_N         = 1024;         // spectrum snapshot length (samples)
 
 struct Modem {
     uhd::wb_iface::sptr regs;
@@ -53,9 +69,12 @@ struct Modem {
         regs->poke32(4 * reg, v);
     }
     // status words 0..31 (see rtl/b210/dvbs2_b210.v)
+    std::atomic<int> prio{0};                  // status() waiting: snapshot reads step aside
     std::vector<uint32_t> status()
     {
+        prio++;
         std::lock_guard<std::mutex> l(m);
+        prio--;
         std::vector<uint32_t> s(32);
         for (uint32_t k = 0; k < 16; k++) {
             uint64_t v = regs->peek64(8 * k);
@@ -63,6 +82,37 @@ struct Modem {
             s[2 * k + 1] = uint32_t(v >> 32);
         }
         return s;
+    }
+    // 1024 consecutive DDC samples (FPGA version >= 2.1); empty if the capture did not finish
+    // (512 register reads, ~0.3 s over USB; locked per access so status() can run in between)
+    uint64_t rd(uint32_t addr)
+    {
+        while (prio) std::this_thread::yield();
+        std::lock_guard<std::mutex> l(m);
+        return regs->peek64(addr);
+    }
+    std::vector<std::complex<float>> snapshot()
+    {
+        std::vector<std::complex<float>> x;
+        wr(REG_CAP, 1);
+        bool done = false;
+        for (int t = 0; t < 50 && !done; t++) {
+            done = (uint32_t(rd(8 * 14) >> 32) >> 31) & 1;    // status word 29 bit 31
+            if (!done) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        if (!done) return x;
+        x.reserve(CAP_N);
+        for (uint32_t page = 0; page < 4; page++) {
+            wr(REG_CAP, page << 8);
+            for (uint32_t w = 0; w < 128; w++) {
+                uint64_t v = rd(8 * (128 + w));
+                for (int h = 0; h < 2; h++) {
+                    uint32_t s = uint32_t(v >> (32 * h));
+                    x.emplace_back(float(int16_t(s >> 16)), float(int16_t(s & 0xFFFF)));
+                }
+            }
+        }
+        return x;
     }
 };
 
@@ -83,10 +133,13 @@ static int frame_symbols(int mc, bool pilots)
         return pilots ? 5598 : 5490;
     return pilots ? 8370 : 8190;
 }
+static double rolloff_of(int ro) { return ro == 1 ? 0.25 : ro == 2 ? 0.20 : 0.35; }
 
-static std::atomic<bool> stop_signal{false};
+static std::atomic<bool> stop_signal{false};   // Ctrl-C / end of program
+static std::atomic<bool> sess_stop{false};     // end of the current streaming session
 static FILE* g_log = stdout;     // status output (stderr when the payload goes to stdout)
 static void sig_int_handler(int) { stop_signal = true; }
+static bool running() { return !stop_signal && !sess_stop; }
 
 // ---------------------------------------------------------------- TX thread
 struct TxStats {
@@ -95,8 +148,6 @@ struct TxStats {
     uint64_t pad_bytes = 0;      // zero bytes appended after the end of the input (flushes the last frame)
 };
 
-// Input reader: a separate thread reads the file / stdin into a bounded queue, so the
-// TX stream never blocks on a slow pipe (it sends empty samples instead -> dummy frames)
 // ---------------------------------------------------------------- file framing
 // The receiver can only lock after the transmitter has started, so the TX first sends
 // a preamble of zero bytes, then a header (magic + length + ~length), then the file.
@@ -126,7 +177,8 @@ struct FileSink {
         if (raw || state == 1) {
             if (state == 2) return;
             wbuf.push_back(b);
-            if (!raw && len != LEN_UNKNOWN && ++written >= len) state = 2;
+            ++written;
+            if (!raw && len != LEN_UNKNOWN && written >= len) state = 2;
             return;
         }
         if (state == 2) return;
@@ -167,12 +219,12 @@ static void reader_worker(FILE* in, InputQueue* iq, std::vector<uint8_t> prefix)
         iq->q.insert(iq->q.end(), prefix.begin(), prefix.end());
     }
     std::vector<uint8_t> b(4096);
-    while (!stop_signal) {
+    while (running()) {
         size_t got = fread(b.data(), 1, b.size(), in);
         std::unique_lock<std::mutex> l(iq->m);
         for (size_t i = 0; i < got; i++) {
-            iq->cv.wait(l, [&] { return iq->q.size() < InputQueue::CAP || stop_signal; });
-            if (stop_signal) return;
+            iq->cv.wait(l, [&] { return iq->q.size() < InputQueue::CAP || !running(); });
+            if (!running()) return;
             iq->q.push_back(b[i]);
         }
         if (got == 0) {        // EOF or error
@@ -183,80 +235,85 @@ static void reader_worker(FILE* in, InputQueue* iq, std::vector<uint8_t> prefix)
 }
 
 static void tx_worker(uhd::usrp::multi_usrp::sptr usrp, InputQueue* iq, double bytes_per_sample, TxStats* st)
-try {
-    uhd::set_thread_priority_safe();
-    uhd::stream_args_t sa("sc16", "sc16");
-    sa.channels = {0};
-    auto tx            = usrp->get_tx_stream(sa);
-    const size_t n     = tx->get_max_num_samps();
-    std::vector<std::complex<int16_t>> buf(n);
-    uhd::tx_metadata_t md;
-    md.start_of_burst = true;
-    md.end_of_burst   = false;
-    md.has_time_spec  = false;
-    // async messages (underflow) from the device
-    std::thread async([&] {
-        uhd::async_metadata_t am;
-        while (!stop_signal) {
-            if (!tx->recv_async_msg(am, 0.2)) continue;
-            if (am.event_code == uhd::async_metadata_t::EVENT_CODE_UNDERFLOW
-                || am.event_code == uhd::async_metadata_t::EVENT_CODE_UNDERFLOW_IN_PACKET)
-                st->underflows++;
-        }
-    });
-    double acc = 0.0;
-    std::vector<uint8_t> chunk;
-    while (!stop_signal) {
-        // take at most the bytes needed for this buffer from the input queue
-        size_t want = iq ? size_t(std::ceil(bytes_per_sample * n)) + 1 : 0;
-        chunk.clear();
-        bool eof = false;
-        if (iq && !st->pad_done) {
-            std::lock_guard<std::mutex> l(iq->m);
-            while (chunk.size() < want && !iq->q.empty()) {
-                chunk.push_back(iq->q.front());
-                iq->q.pop_front();
+{
+    std::atomic<bool> async_stop{false};
+    std::thread async;
+    try {
+        uhd::set_thread_priority_safe();
+        uhd::stream_args_t sa("sc16", "sc16");
+        sa.channels = {0};
+        auto tx        = usrp->get_tx_stream(sa);
+        const size_t n = tx->get_max_num_samps();
+        std::vector<std::complex<int16_t>> buf(n);
+        uhd::tx_metadata_t md;
+        md.start_of_burst = true;
+        md.end_of_burst   = false;
+        md.has_time_spec  = false;
+        // async messages (underflow) from the device
+        async = std::thread([&] {
+            uhd::async_metadata_t am;
+            while (!async_stop) {
+                if (!tx->recv_async_msg(am, 0.2)) continue;
+                if (am.event_code == uhd::async_metadata_t::EVENT_CODE_UNDERFLOW
+                    || am.event_code == uhd::async_metadata_t::EVENT_CODE_UNDERFLOW_IN_PACKET)
+                    st->underflows++;
             }
-            eof = iq->eof && iq->q.empty();
-            iq->cv.notify_one();
-        }
-        size_t ci = 0;
-        for (size_t i = 0; i < n; i++) {
-            int16_t I = 0;
+        });
+        double acc = 0.0;
+        std::vector<uint8_t> chunk;
+        while (running()) {
+            // take at most the bytes needed for this buffer from the input queue
+            size_t want = iq ? size_t(std::ceil(bytes_per_sample * n)) + 1 : 0;
+            chunk.clear();
+            bool eof = false;
             if (iq && !st->pad_done) {
-                acc += bytes_per_sample;
-                if (acc >= 1.0) {
-                    if (ci < chunk.size()) {
-                        I = int16_t(0x100 | chunk[ci++]);      // valid flag + payload byte
-                        st->bytes++;
-                        acc -= 1.0;
-                    } else if (eof) {
-                        // input finished: pad with zeros so the last BBFRAME is completed and sent
-                        I = int16_t(0x100);
-                        acc -= 1.0;
-                        if (++st->pad >= st->pad_bytes) st->pad_done = true;
-                    } else {
-                        acc = 0.0;          // input not ready (slow pipe): no byte, TX sends dummy frames
+                std::lock_guard<std::mutex> l(iq->m);
+                while (chunk.size() < want && !iq->q.empty()) {
+                    chunk.push_back(iq->q.front());
+                    iq->q.pop_front();
+                }
+                eof = iq->eof && iq->q.empty();
+                iq->cv.notify_one();
+            }
+            size_t ci = 0;
+            for (size_t i = 0; i < n; i++) {
+                int16_t I = 0;
+                if (iq && !st->pad_done) {
+                    acc += bytes_per_sample;
+                    if (acc >= 1.0) {
+                        if (ci < chunk.size()) {
+                            I = int16_t(0x100 | chunk[ci++]);      // valid flag + payload byte
+                            st->bytes++;
+                            acc -= 1.0;
+                        } else if (eof) {
+                            // input finished: pad with zeros so the last BBFRAME is completed and sent
+                            I = int16_t(0x100);
+                            acc -= 1.0;
+                            if (++st->pad >= st->pad_bytes) st->pad_done = true;
+                        } else {
+                            acc = 0.0;          // input not ready (slow pipe): no byte, TX sends dummy frames
+                        }
                     }
                 }
+                buf[i] = std::complex<int16_t>(I, 0);
             }
-            buf[i] = std::complex<int16_t>(I, 0);
+            // bytes taken but not used go back to the front of the queue
+            if (ci < chunk.size()) {
+                std::lock_guard<std::mutex> l(iq->m);
+                for (size_t k = chunk.size(); k > ci; k--) iq->q.push_front(chunk[k - 1]);
+            }
+            tx->send(&buf.front(), n, md, 1.0);
+            md.start_of_burst = false;
+            st->samples += n;
         }
-        // bytes taken but not used go back to the front of the queue
-        if (ci < chunk.size()) {
-            std::lock_guard<std::mutex> l(iq->m);
-            for (size_t k = chunk.size(); k > ci; k--) iq->q.push_front(chunk[k - 1]);
-        }
-        tx->send(&buf.front(), n, md, 1.0);
-        md.start_of_burst = false;
-        st->samples += n;
+        md.end_of_burst = true;
+        tx->send("", 0, md);
+    } catch (const std::exception& e) {
+        fprintf(stderr, "TX thread error: %s\n", e.what());
+        stop_signal = true;
     }
-    md.end_of_burst = true;
-    tx->send("", 0, md);
-    async.join();
-} catch (const std::exception& e) {
-    fprintf(stderr, "TX thread error: %s\n", e.what());
-    stop_signal = true;
+    async_stop = true;
+    if (async.joinable()) async.join();
 }
 
 // ---------------------------------------------------------------- RX thread
@@ -264,6 +321,10 @@ struct RxStats {
     std::atomic<uint64_t> samples{0}, bytes{0}, seq_gaps{0}, file_gaps{0}, frames_out{0}, overflows{0};
     std::atomic<uint64_t> file_len{0}, file_written{0};
     std::atomic<int> file_state{0};
+    // spectrum tap (PRBS mode: the RX stream carries the raw DDC samples): the main loop sets
+    // tap_req, rx_worker fills tap with CAP_N consecutive samples and sets tap_ready
+    std::atomic<bool> tap_req{false}, tap_ready{false};
+    std::vector<std::complex<float>> tap;
 };
 static void rx_worker(uhd::usrp::multi_usrp::sptr usrp, FileSink* sink, bool data_mode, RxStats* st)
 try {
@@ -279,10 +340,11 @@ try {
     rx->issue_stream_cmd(cmd);
     uint16_t last_seq = 0;
     bool have_seq     = false;
-    while (!stop_signal) {
+    while (running()) {
         size_t got = rx->recv(&buf.front(), n, md, 1.0);
         if (md.error_code == uhd::rx_metadata_t::ERROR_CODE_OVERFLOW) {
             st->overflows++;
+            if (!st->tap_ready) st->tap.clear();
             continue;
         }
         if (md.error_code != uhd::rx_metadata_t::ERROR_CODE_NONE
@@ -291,8 +353,17 @@ try {
             continue;
         }
         st->samples += got;
-        if (!data_mode)
+        if (!data_mode) {
+            if (st->tap_req && !st->tap_ready) {
+                for (size_t i = 0; i < got && st->tap.size() < size_t(CAP_N); i++)
+                    st->tap.emplace_back(float(buf[i].real()), float(buf[i].imag()));
+                if (st->tap.size() == size_t(CAP_N)) {
+                    st->tap_req   = false;
+                    st->tap_ready = true;
+                }
+            }
             continue;
+        }
         for (size_t i = 0; i < got; i++) {
             uint16_t I = uint16_t(buf[i].real());
             if (!(I & 0x100))
@@ -315,13 +386,15 @@ try {
         st->file_written = sink->written;
     }
     rx->issue_stream_cmd(uhd::stream_cmd_t(uhd::stream_cmd_t::STREAM_MODE_STOP_CONTINUOUS));
+    // drain what is still in flight so the next session starts clean
+    while (rx->recv(&buf.front(), n, md, 0.1) > 0) {}
 } catch (const std::exception& e) {
     fprintf(stderr, "RX thread error: %s\n", e.what());
     stop_signal = true;
 }
 
 // ---------------------------------------------------------------- status printing
-static void print_rx(const std::vector<uint32_t>& s, double rs, const RxStats& rst, bool data_mode)
+static void print_rx(const std::vector<uint32_t>& s, double rs, const RxStats& rst, bool data_mode, bool raw)
 {
     uint32_t w0   = s[0];
     bool lock     = (w0 >> 4) & 1;
@@ -341,7 +414,9 @@ static void print_rx(const std::vector<uint32_t>& s, double rs, const RxStats& r
         fprintf(g_log, " | payload %llu B, seq gaps %llu", (unsigned long long)rst.bytes.load(),
             (unsigned long long)rst.seq_gaps.load());
         int fs = rst.file_state;
-        if (fs == 0)
+        if (raw)
+            fprintf(g_log, " | raw: %llu B", (unsigned long long)rst.file_written.load());
+        else if (fs == 0)
             fprintf(g_log, " | file: waiting for header");
         else if (rst.file_len == LEN_UNKNOWN)
             fprintf(g_log, " | stream: %llu B", (unsigned long long)rst.file_written.load());
@@ -369,11 +444,401 @@ static void print_tx(const std::vector<uint32_t>& s, const TxStats& tst, bool da
     fflush(g_log);
 }
 
+// ---------------------------------------------------------------- spectrum
+static void fft(std::vector<std::complex<float>>& a)
+{
+    const size_t n = a.size();
+    for (size_t i = 1, j = 0; i < n; i++) {
+        size_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) std::swap(a[i], a[j]);
+    }
+    for (size_t len = 2; len <= n; len <<= 1) {
+        const double ang = -2.0 * M_PI / double(len);
+        const std::complex<float> wl(float(std::cos(ang)), float(std::sin(ang)));
+        for (size_t i = 0; i < n; i += len) {
+            std::complex<float> w(1.0f, 0.0f);
+            for (size_t k = 0; k < len / 2; k++) {
+                std::complex<float> u = a[i + k], v = a[i + k + len / 2] * w;
+                a[i + k]           = u + v;
+                a[i + k + len / 2] = u - v;
+                w *= wl;
+            }
+        }
+    }
+}
+// power spectrum in dBFS (full scale = 32767), fftshifted, Hann window
+static std::vector<float> power_spectrum(const std::vector<std::complex<float>>& x)
+{
+    const size_t n = x.size();
+    std::vector<std::complex<float>> a(n);
+    double wsum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        float w = 0.5f - 0.5f * float(std::cos(2.0 * M_PI * double(i) / double(n)));
+        a[i]    = x[i] * w;
+        wsum += w;
+    }
+    fft(a);
+    std::vector<float> p(n);
+    const double ref = 32767.0 * wsum;
+    for (size_t i = 0; i < n; i++)
+        p[i] = float(10.0 * std::log10(std::norm(a[(i + n / 2) % n]) / (ref * ref) + 1e-15));
+    return p;
+}
+
+// ---------------------------------------------------------------- run-time configuration
+struct Config {
+    double tx_freq = 0, rx_freq = 0;
+    double tx_bw = 0, rx_bw = 0;        // occupied bandwidth = Rs (1 + roll-off); also the AD9361 filter
+    double tx_gain = 0, rx_gain = 0;
+    int modcod = 13, ro = 0, max_iter = 25;
+    bool pilots = true;
+    std::string tx_ant, rx_ant;
+};
+struct Actual {
+    double mcr = 0, fs_tx = 0, fs_rx = 0;
+    double tx_freq = 0, rx_freq = 0, tx_gain = 0, rx_gain = 0, tx_abw = 0, rx_abw = 0;
+};
+
+// master clock: >= 8 radio clocks per sample at the higher of the two rates,
+// interpolation/decimation a multiple of 4 (CIC + halfbands), MCR around 16 MHz or more
+static double choose_mcr(double fs)
+{
+    int d = int(std::ceil(16e6 / fs));
+    d     = std::max(8, (d + 3) / 4 * 4);
+    while (fs * d > 61.44e6 && d > 8) d -= 4;
+    return fs * d;
+}
+
+// ---------------------------------------------------------------- minimal HTTP server (web mode)
+struct WebState {
+    std::mutex m;
+    std::string status_json = "{}", spectrum_json = "{}";
+    // requests from the web page, handled by the main loop
+    std::map<std::string, double> pending;     // tx_freq, tx_bw, ... -> value
+    bool req_send = false, req_prbs = false;
+    std::string send_path, send_name;
+    std::string rx_path;                       // last received file (download)
+};
+static WebState g_web;
+
+static std::string url_decode(const std::string& s)
+{
+    std::string o;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '+') o += ' ';
+        else if (s[i] == '%' && i + 2 < s.size()) {
+            o += char(std::stoi(s.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else o += s[i];
+    }
+    return o;
+}
+static std::map<std::string, std::string> parse_query(const std::string& q)
+{
+    std::map<std::string, std::string> kv;
+    std::stringstream ss(q);
+    std::string item;
+    while (std::getline(ss, item, '&')) {
+        size_t e = item.find('=');
+        if (e == std::string::npos) continue;
+        kv[url_decode(item.substr(0, e))] = url_decode(item.substr(e + 1));
+    }
+    return kv;
+}
+static void send_all(int fd, const std::string& s)
+{
+    size_t off = 0;
+    while (off < s.size()) {
+        ssize_t w = ::send(fd, s.data() + off, s.size() - off, MSG_NOSIGNAL);
+        if (w <= 0) return;
+        off += size_t(w);
+    }
+}
+static void reply(int fd, int code, const std::string& type, const std::string& body, const std::string& extra = "")
+{
+    const char* txt = code == 200 ? "OK" : code == 404 ? "Not Found" : code == 413 ? "Payload Too Large" : "Bad Request";
+    std::string h = "HTTP/1.1 " + std::to_string(code) + " " + txt + "\r\nContent-Type: " + type
+                    + "\r\nContent-Length: " + std::to_string(body.size()) + "\r\nCache-Control: no-store\r\n" + extra
+                    + "Connection: close\r\n\r\n";
+    send_all(fd, h + body);
+}
+static bool read_file(const std::string& path, std::string& out)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    return true;
+}
+static std::string safe_name(const std::string& n)
+{
+    std::string o;
+    for (char c : n)
+        o += (isalnum((unsigned char)c) || c == '.' || c == '-' || c == '_') ? c : '_';
+    if (o.empty() || o[0] == '.') o = "file" + o;
+    return o.substr(0, 100);
+}
+
+static const size_t MAX_UPLOAD = size_t(2) << 30;     // 2 GB (at ~300 kB/s that is ~2 h of air time)
+static void handle_client(int fd, const std::string& web_root, const std::string& file_dir)
+{
+    std::string req;
+    char b[65536];
+    size_t hdr_end = std::string::npos;
+    while (hdr_end == std::string::npos && req.size() < 65536) {
+        ssize_t r = ::recv(fd, b, sizeof(b), 0);
+        if (r <= 0) return;
+        req.append(b, size_t(r));
+        hdr_end = req.find("\r\n\r\n");
+    }
+    if (hdr_end == std::string::npos) return;
+    std::string head = req.substr(0, hdr_end);
+    std::string body = req.substr(hdr_end + 4);
+    std::istringstream hs(head);
+    std::string method, target, ver;
+    hs >> method >> target >> ver;
+    size_t clen = 0;
+    {
+        std::string lower = head;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        size_t p = lower.find("content-length:");
+        if (p != std::string::npos) clen = size_t(std::stoull(head.substr(p + 15)));
+    }
+    std::string path = target, query;
+    size_t qm = target.find('?');
+    if (qm != std::string::npos) {
+        path  = target.substr(0, qm);
+        query = target.substr(qm + 1);
+    }
+    // file upload: streamed to disk (not held in memory)
+    if (method == "POST" && path == "/api/send") {
+        auto kv          = parse_query(query);
+        std::string name = safe_name(kv.count("name") ? kv["name"] : "payload.bin");
+        std::string p    = file_dir + "/tx_" + name;
+        if (clen > MAX_UPLOAD) {
+            reply(fd, 413, "application/json", "{\"ok\":false,\"error\":\"file too large (max 2 GB)\"}");
+            return;
+        }
+        FILE* f = fopen(p.c_str(), "wb");
+        if (!f) {
+            reply(fd, 500, "application/json", "{\"ok\":false,\"error\":\"cannot write " + p + "\"}");
+            return;
+        }
+        size_t got = std::min(body.size(), clen);
+        bool ok    = fwrite(body.data(), 1, got, f) == got;
+        while (ok && got < clen) {
+            ssize_t r = ::recv(fd, b, sizeof(b), 0);
+            if (r <= 0) break;
+            ok = fwrite(b, 1, size_t(r), f) == size_t(r);
+            got += size_t(r);
+        }
+        ok = (fclose(f) == 0) && ok;
+        if (!ok || got < clen) {
+            fprintf(stderr, "web: upload %s incomplete (%zu of %zu bytes)\n", name.c_str(), got, clen);
+            reply(fd, 400, "application/json", "{\"ok\":false,\"error\":\"upload incomplete or disk full\"}");
+            return;
+        }
+        fprintf(g_log, "web: received upload %s (%zu bytes)\n", name.c_str(), got);
+        std::lock_guard<std::mutex> l(g_web.m);
+        g_web.req_send  = true;
+        g_web.send_path = p;
+        g_web.send_name = name;
+        reply(fd, 200, "application/json", "{\"ok\":true}");
+        return;
+    }
+    if (clen > (1u << 20)) {
+        reply(fd, 413, "text/plain", "request too large\n");
+        return;
+    }
+    while (body.size() < clen) {
+        ssize_t r = ::recv(fd, b, sizeof(b), 0);
+        if (r <= 0) return;
+        body.append(b, size_t(r));
+    }
+    if (method == "GET" && path == "/api/status") {
+        std::lock_guard<std::mutex> l(g_web.m);
+        reply(fd, 200, "application/json", g_web.status_json);
+    } else if (method == "GET" && path == "/api/spectrum") {
+        std::lock_guard<std::mutex> l(g_web.m);
+        reply(fd, 200, "application/json", g_web.spectrum_json);
+    } else if (method == "POST" && path == "/api/config") {
+        auto kv = parse_query(body.empty() ? query : body);
+        static const char* keys[] = {"tx_freq", "tx_bw", "tx_gain", "rx_freq", "rx_bw", "rx_gain", "tx_on", "rx_on"};
+        std::lock_guard<std::mutex> l(g_web.m);
+        int n = 0;
+        for (const char* k : keys) {
+            auto it = kv.find(k);
+            if (it == kv.end() || it->second.empty()) continue;
+            try {
+                g_web.pending[k] = std::stod(it->second);
+                n++;
+            } catch (...) {
+            }
+        }
+        reply(fd, n ? 200 : 400, "application/json", n ? "{\"ok\":true}" : "{\"ok\":false}");
+    } else if (method == "POST" && path == "/api/prbs") {
+        std::lock_guard<std::mutex> l(g_web.m);
+        g_web.req_prbs = true;
+        reply(fd, 200, "application/json", "{\"ok\":true}");
+    } else if (method == "GET" && path == "/api/received") {
+        std::string p, data;
+        {
+            std::lock_guard<std::mutex> l(g_web.m);
+            p = g_web.rx_path;
+        }
+        if (p.empty() || !read_file(p, data)) {
+            reply(fd, 404, "text/plain", "no received file\n");
+            return;
+        }
+        std::string fn = p.substr(p.find_last_of('/') + 1);
+        reply(fd, 200, "application/octet-stream", data, "Content-Disposition: attachment; filename=\"" + fn + "\"\r\n");
+    } else if (method == "GET" && (path == "/" || path == "/index.html")) {
+        std::string data;
+        if (!read_file(web_root + "/index.html", data)) {
+            reply(fd, 404, "text/plain", "index.html not found in " + web_root + " (use --web-root)\n");
+            return;
+        }
+        reply(fd, 200, "text/html; charset=utf-8", data);
+    } else {
+        reply(fd, 404, "text/plain", "not found\n");
+    }
+}
+
+static void web_server(int port, std::string bind_addr, std::string web_root, std::string file_dir)
+{
+    int s = ::socket(AF_INET, SOCK_STREAM, 0);
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port   = htons(uint16_t(port));
+    if (inet_pton(AF_INET, bind_addr.c_str(), &a.sin_addr) != 1 || ::bind(s, (sockaddr*)&a, sizeof(a)) != 0
+        || ::listen(s, 16) != 0) {
+        fprintf(stderr, "web: cannot listen on %s:%d (%s)\n", bind_addr.c_str(), port, strerror(errno));
+        stop_signal = true;
+        return;
+    }
+    timeval tv{0, 200000};
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));   // accept() wakes up to check stop_signal
+    fprintf(g_log, "web page: http://%s:%d/\n", bind_addr == "0.0.0.0" ? "localhost" : bind_addr.c_str(), port);
+    while (!stop_signal) {
+        int c = ::accept(s, nullptr, nullptr);
+        if (c < 0) continue;
+        timeval ct{10, 0};
+        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &ct, sizeof(ct));
+        try {
+            handle_client(c, web_root, file_dir);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "web: %s\n", e.what());
+        }
+        ::close(c);
+    }
+    ::close(s);
+}
+
+static std::string exe_dir()
+{
+    char p[4096];
+    ssize_t n = readlink("/proc/self/exe", p, sizeof(p) - 1);
+    if (n <= 0) return ".";
+    p[n]          = 0;
+    std::string s = p;
+    return s.substr(0, s.find_last_of('/'));
+}
+static std::string jstr(const std::string& s)
+{
+    std::string o = "\"";
+    for (char c : s) {
+        if (c == '"' || c == '\\') o += '\\';
+        if ((unsigned char)c >= 0x20) o += c;
+    }
+    return o + "\"";
+}
+
+// ---------------------------------------------------------------- one streaming session
+// RF / rate setup, modem configuration and the TX/RX/reader threads.  A session is
+// restarted when the bandwidth (sample rate) or the TX payload source changes.
+struct Session {
+    bool do_tx = false, do_rx = false, tx_data = false, rx_data = false, raw = false;
+    double bps = 0;               // payload bytes per sample (tx_data)
+    double fs_act = 0, rs_tx = 0, rs_rx = 0;
+    FILE* fin = nullptr;
+    FILE* fout = nullptr;
+    std::string in_name, in_path, out_path;
+    std::unique_ptr<TxStats> tst;
+    std::unique_ptr<RxStats> rst;
+    std::unique_ptr<InputQueue> iq;
+    std::unique_ptr<FileSink> sink;
+    std::thread ttx, trx, trd;
+    std::chrono::steady_clock::time_point t0;
+    bool cleared = false, compared = false;
+    std::string result;           // file comparison result (web mode)
+
+    void stop(Modem& modem)
+    {
+        sess_stop = true;
+        if (iq) {
+            std::lock_guard<std::mutex> l(iq->m);
+            iq->cv.notify_all();
+        }
+        if (ttx.joinable()) ttx.join();
+        if (trx.joinable()) trx.join();
+        if (trd.joinable()) {
+            // a reader blocked in fread() on stdin cannot be interrupted: detach it
+            if (fin == stdin) trd.detach(); else trd.join();
+        }
+        modem.wr(REG_CTRL, CTRL_PLL | CTRL_AGC | CTRL_ES);    // modem off (reset): radio back to normal
+        if (fin && fin != stdin) fclose(fin);
+        if (fout && fout != stdout) fclose(fout);
+        fin = fout = nullptr;
+        sess_stop  = false;
+    }
+};
+
+static Actual apply_rf(uhd::usrp::multi_usrp::sptr usrp, const Config& c, bool do_tx, bool do_rx)
+{
+    const double a  = rolloff_of(c.ro);
+    const double fs_tx = 2.0 * c.tx_bw / (1.0 + a), fs_rx = 2.0 * c.rx_bw / (1.0 + a);
+    const double fsmax = std::max(do_tx ? fs_tx : 0.0, do_rx ? fs_rx : 0.0);
+    const double mcr   = choose_mcr(fsmax);
+    if (mcr / fsmax < 8.0 - 1e-9 || mcr > 61.44e6)
+        throw std::runtime_error("need master clock >= 8 x sample rate and <= 61.44 MHz: lower the bandwidth / --rs");
+    usrp->set_master_clock_rate(mcr);
+    Actual r;
+    r.mcr = usrp->get_master_clock_rate();
+    if (do_rx) {
+        usrp->set_rx_rate(fs_rx, 0);
+        usrp->set_rx_freq(uhd::tune_request_t(c.rx_freq), 0);
+        usrp->set_rx_gain(c.rx_gain, 0);
+        usrp->set_rx_antenna(c.rx_ant, 0);
+        usrp->set_rx_bandwidth(c.rx_bw, 0);
+        r.fs_rx   = usrp->get_rx_rate(0);
+        r.rx_freq = usrp->get_rx_freq(0);
+        r.rx_gain = usrp->get_rx_gain(0);
+        r.rx_abw  = usrp->get_rx_bandwidth(0);
+    }
+    if (do_tx) {
+        usrp->set_tx_rate(fs_tx, 0);
+        usrp->set_tx_freq(uhd::tune_request_t(c.tx_freq), 0);
+        usrp->set_tx_gain(c.tx_gain, 0);
+        usrp->set_tx_antenna(c.tx_ant, 0);
+        usrp->set_tx_bandwidth(c.tx_bw, 0);
+        r.fs_tx   = usrp->get_tx_rate(0);
+        r.tx_freq = usrp->get_tx_freq(0);
+        r.tx_gain = usrp->get_tx_gain(0);
+        r.tx_abw  = usrp->get_tx_bandwidth(0);
+    }
+    return r;
+}
+
 int UHD_SAFE_MAIN(int argc, char* argv[])
 {
-    std::string args, fpga, mode, input, output, tx_ant, rx_ant, ref;
-    double freq, tx_freq, rx_freq, rs, mcr, tx_gain, rx_gain, duration, preamble;
-    int modcod, rolloff_i, max_iter;
+    std::string args, fpga, mode, input, output, tx_ant, rx_ant, ref, web_bind, web_root, file_dir;
+    double freq, tx_freq, rx_freq, rs, bw, tx_bw, rx_bw, tx_gain, rx_gain, duration, preamble;
+    int modcod, rolloff_i, max_iter, web_port;
     bool no_pilots, raw;
     po::options_description desc("dvbs2_b210 options");
     // clang-format off
@@ -381,26 +846,32 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         ("help,h", "help")
         ("args", po::value<std::string>(&args)->default_value(""), "UHD device args, e.g. serial=3xxxxxx")
         ("fpga", po::value<std::string>(&fpga)->default_value("usrp_b210_dvbs2_fpga.bin"), "DVB-S2 FPGA image")
-        ("mode", po::value<std::string>(&mode)->default_value("rx"), "tx | rx | trx")
-        ("freq", po::value<double>(&freq)->default_value(2.45e9), "RF frequency (Hz)")
+        ("mode", po::value<std::string>(&mode)->default_value(""), "tx | rx | trx (default rx, with --web trx)")
+        ("freq", po::value<double>(&freq)->default_value(0), "RF frequency (Hz) (default 2.45e9, with --web 1e9)")
         ("tx-freq", po::value<double>(&tx_freq)->default_value(0), "TX frequency (default --freq)")
         ("rx-freq", po::value<double>(&rx_freq)->default_value(0), "RX frequency (default --freq)")
-        ("rs", po::value<double>(&rs)->default_value(1e6), "symbol rate (sym/s), max 3.84e6")
-        ("mcr", po::value<double>(&mcr)->default_value(0), "master clock rate (0 = automatic)")
+        ("rs", po::value<double>(&rs)->default_value(0), "symbol rate (sym/s), max 3.84e6 (default 1e6, or from --bw)")
+        ("bw", po::value<double>(&bw)->default_value(0), "occupied bandwidth Rs*(1+roll-off) in Hz, sets Rs (with --web default 2e6)")
+        ("tx-bw", po::value<double>(&tx_bw)->default_value(0), "TX bandwidth (default --bw)")
+        ("rx-bw", po::value<double>(&rx_bw)->default_value(0), "RX bandwidth (default --bw)")
         ("modcod", po::value<int>(&modcod)->default_value(13), "1..10 QPSK 1/4..8/9, 12..16 8PSK 3/5..8/9")
         ("no-pilots", po::bool_switch(&no_pilots), "transmit without pilots")
         ("rolloff", po::value<int>(&rolloff_i)->default_value(35), "35 | 25 | 20")
-        ("tx-gain", po::value<double>(&tx_gain)->default_value(60), "TX gain (dB)")
+        ("tx-gain", po::value<double>(&tx_gain)->default_value(-1), "TX gain (dB) (default 60, with --web 40)")
         ("rx-gain", po::value<double>(&rx_gain)->default_value(40), "RX gain (dB)")
         ("tx-ant", po::value<std::string>(&tx_ant)->default_value("TX/RX"), "TX antenna")
         ("rx-ant", po::value<std::string>(&rx_ant)->default_value("RX2"), "RX antenna")
         ("ref", po::value<std::string>(&ref)->default_value("internal"), "clock reference: internal | external (10 MHz REF IN) | gpsdo")
         ("input", po::value<std::string>(&input)->default_value(""), "TX payload file ('-' = stdin); none = PRBS")
         ("output", po::value<std::string>(&output)->default_value(""), "RX payload file ('-' = stdout); none = PRBS BER check")
-        ("max-iter", po::value<int>(&max_iter)->default_value(25), "LDPC iterations")
+        ("max-iter", po::value<int>(&max_iter)->default_value(25), "LDPC iterations (1..50)")
         ("preamble", po::value<double>(&preamble)->default_value(1.0), "TX: seconds of zero bytes before the file (RX lock time)")
         ("raw", po::bool_switch(&raw), "no file header: TX sends the bytes as they are, RX writes every byte")
-        ("duration", po::value<double>(&duration)->default_value(0), "seconds to run (0 = until Ctrl-C)");
+        ("duration", po::value<double>(&duration)->default_value(0), "seconds to run (0 = until Ctrl-C)")
+        ("web", po::value<int>(&web_port)->default_value(0), "web page on this TCP port (0 = off)")
+        ("web-bind", po::value<std::string>(&web_bind)->default_value("127.0.0.1"), "web: address to listen on (0.0.0.0 = all)")
+        ("web-root", po::value<std::string>(&web_root)->default_value(""), "web: directory with index.html (default <program>/../web)")
+        ("file-dir", po::value<std::string>(&file_dir)->default_value("dvbs2_files"), "web: directory for sent / received files");
     // clang-format on
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -409,44 +880,48 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         std::cout << desc << std::endl;
         return EXIT_SUCCESS;
     }
+    const bool web = web_port > 0;
+    if (mode.empty()) mode = web ? "trx" : "rx";
     const bool do_tx = (mode == "tx" || mode == "trx");
     const bool do_rx = (mode == "rx" || mode == "trx");
     if (!do_tx && !do_rx)
         throw std::runtime_error("--mode must be tx, rx or trx");
+    // TX / RX switched on: from the start on the command line; in web mode off until switched on in the page
+    bool tx_on = do_tx && !web, rx_on = do_rx && !web;
     if (kbch_of(modcod) == 0)
         throw std::runtime_error("unsupported --modcod");
+    if (rolloff_i != 35 && rolloff_i != 25 && rolloff_i != 20)
+        throw std::runtime_error("--rolloff must be 35, 25 or 20");
+    if (max_iter < 1 || max_iter > 50)
+        throw std::runtime_error("--max-iter must be 1..50");
+    if (web && (!input.empty() || !output.empty()))
+        throw std::runtime_error("--web: send files from the web page instead of --input/--output");
     const int ro       = rolloff_i == 25 ? 1 : rolloff_i == 20 ? 2 : 0;
-    const bool pilots  = !no_pilots;
-    const bool tx_data = do_tx && !input.empty();
-    const bool rx_data = do_rx && !output.empty();
+    const double alpha = rolloff_of(ro);
     if (output == "-") g_log = stderr;
-    if (tx_freq == 0) tx_freq = freq;
-    if (rx_freq == 0) rx_freq = freq;
 
-    // sample rate = 2 Rs; >= 8 radio clocks per sample
-    const double fs = 2.0 * rs;
-    if (mcr == 0) {
-        // interpolation / decimation d = MCR / fs: >= 8, multiple of 4 (CIC + halfbands),
-        // MCR around 16 MHz or more
-        int d = int(std::ceil(16e6 / fs));
-        d     = std::max(8, (d + 3) / 4 * 4);
-        if (fs * d > 61.44e6) d = 8;
-        mcr = fs * d;
-    }
-    if (mcr / fs < 8.0 - 1e-9 || mcr > 61.44e6)
-        throw std::runtime_error("need master clock >= 8 x sample rate and <= 61.44 MHz: lower --rs");
-
-    FILE* fin  = nullptr;
-    FILE* fout = nullptr;
-    if (tx_data) fin = (input == "-") ? stdin : fopen(input.c_str(), "rb");
-    if (rx_data) fout = (output == "-") ? stdout : fopen(output.c_str(), "wb");
-    if ((tx_data && !fin) || (rx_data && !fout))
-        throw std::runtime_error("cannot open payload file " + (tx_data && !fin ? input : output));
+    Config cfg;
+    if (freq == 0) freq = web ? 1e9 : 2.45e9;
+    cfg.tx_freq = tx_freq ? tx_freq : freq;
+    cfg.rx_freq = rx_freq ? rx_freq : freq;
+    if (bw == 0) bw = rs ? rs * (1 + alpha) : web ? 2e6 : 1e6 * (1 + alpha);
+    cfg.tx_bw   = tx_bw ? tx_bw : bw;
+    cfg.rx_bw   = rx_bw ? rx_bw : bw;
+    cfg.tx_gain = tx_gain >= 0 ? tx_gain : web ? 40 : 60;
+    cfg.rx_gain = rx_gain;
+    cfg.modcod  = modcod;
+    cfg.pilots  = !no_pilots;
+    cfg.ro      = ro;
+    cfg.max_iter = max_iter;
+    cfg.tx_ant  = tx_ant;
+    cfg.rx_ant  = rx_ant;
 
     // ---- open the device with the DVB-S2 FPGA image
     std::string dev_args = args;
     if (!dev_args.empty()) dev_args += ",";
-    dev_args += "fpga=" + fpga + ",enable_user_regs,master_clock_rate=" + std::to_string(mcr);
+    const double a0      = rolloff_of(ro);
+    const double mcr0    = choose_mcr(2.0 * std::max(do_tx ? cfg.tx_bw : 0.0, do_rx ? cfg.rx_bw : 0.0) / (1 + a0));
+    dev_args += "fpga=" + fpga + ",enable_user_regs,master_clock_rate=" + std::to_string(mcr0);
     fprintf(g_log, "Opening B210 with %s\n", dev_args.c_str());
     auto usrp = uhd::usrp::multi_usrp::make(dev_args);
     if (ref != "internal") {
@@ -459,24 +934,6 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
     }
     usrp->set_rx_subdev_spec(std::string("A:A"));
     usrp->set_tx_subdev_spec(std::string("A:A"));
-    if (do_rx) {
-        usrp->set_rx_rate(fs, 0);
-        usrp->set_rx_freq(uhd::tune_request_t(rx_freq), 0);
-        usrp->set_rx_gain(rx_gain, 0);
-        usrp->set_rx_antenna(rx_ant, 0);
-    }
-    if (do_tx) {
-        usrp->set_tx_rate(fs, 0);
-        usrp->set_tx_freq(uhd::tune_request_t(tx_freq), 0);
-        usrp->set_tx_gain(tx_gain, 0);
-        usrp->set_tx_antenna(tx_ant, 0);
-    }
-    const double mcr_act = usrp->get_master_clock_rate();
-    const double fs_act  = do_rx ? usrp->get_rx_rate(0) : usrp->get_tx_rate(0);
-    fprintf(g_log, "master clock %.3f MHz, sample rate %.4f MS/s (%.1f clocks/sample), symbol rate %.4f Msym/s\n",
-        mcr_act / 1e6, fs_act / 1e6, mcr_act / fs_act, fs_act / 2e6);
-    if (mcr_act / fs_act < 7.999)
-        throw std::runtime_error("less than 8 radio clocks per sample");
 
     Modem modem;
     modem.regs = usrp->get_user_settings_iface(0);
@@ -487,101 +944,350 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         fprintf(stderr, "DVB-S2 modem not found in the FPGA (ID word 0x%08x). Is --fpga the DVB-S2 image?\n", s0[30]);
         return EXIT_FAILURE;
     }
+    const bool has_cap = (s0[31] & 0xFFFF) >= 1;     // version 2.1: spectrum snapshot
     fprintf(g_log, "DVB-S2 modem found, version %u.%u\n", s0[31] >> 16, s0[31] & 0xFFFF);
-
-    // ---- configure
-    uint32_t ctrl = CTRL_PLL | CTRL_AGC | CTRL_ES;
-    modem.wr(REG_CTRL, ctrl);                       // both parts held in reset
-    modem.wr(REG_TXCFG, uint32_t(modcod & 31) | (pilots ? 1u << 8 : 0u) | (uint32_t(ro) << 12));
-    modem.wr(REG_FEC, (uint32_t(max_iter & 63) << 16) | (16u << 8) | 24u);
-    if (do_tx) ctrl |= CTRL_TX_EN | (tx_data ? CTRL_TX_DATA : 0);
-    if (do_rx) ctrl |= CTRL_RX_EN | (rx_data ? CTRL_RX_DATA : 0);
-    modem.wr(REG_CTRL, ctrl);
-    modem.wr(REG_CLR, 1);
-    fprintf(g_log, "%s, %s, roll-off 0.%02d, %s%s\n", MODCOD_NAME[modcod], pilots ? "pilots" : "no pilots", rolloff_i,
-        do_tx ? (tx_data ? "TX payload from file " : "TX PRBS ") : "", do_rx ? (rx_data ? "RX payload to file" : "RX PRBS check") : "");
-
-    // payload rate: 90 % of the frame capacity, in bytes per sample (2 samples / symbol)
-    const double bps = 0.9 * double((kbch_of(modcod) - 80) / 8) / (2.0 * frame_symbols(modcod, pilots));
-    if (tx_data)
-        fprintf(g_log, "payload capacity %.1f kB/s, sending at %.1f kB/s\n", bps / 0.9 * fs_act / 1e3, bps * fs_act / 1e3);
+    if (web && !has_cap)
+        fprintf(g_log, "note: this FPGA image has no spectrum snapshot (version < 2.1), the web page shows no spectrum\n");
+    if (web) mkdir(file_dir.c_str(), 0755);
+    if (web_root.empty()) web_root = exe_dir() + "/../web";
 
     std::signal(SIGINT, &sig_int_handler);
-    TxStats tst;
-    tst.pad_bytes = 2 * uint64_t((kbch_of(modcod) - 80) / 8);
-    RxStats rst;
-    InputQueue iq;
-    std::thread ttx, trx, trd;
-    std::vector<uint8_t> prefix;
-    if (tx_data && !raw) {
-        // preamble (zero bytes while the receiver locks) + header
-        prefix.assign(size_t(std::max(0.0, preamble) * bps * fs_act), 0);
-        uint64_t flen = LEN_UNKNOWN;
-        if (fin != stdin && fseek(fin, 0, SEEK_END) == 0) {
-            long sz = ftell(fin);
-            if (sz >= 0) flen = uint64_t(sz);
-            fseek(fin, 0, SEEK_SET);
-        }
-        prefix.insert(prefix.end(), FILE_MAGIC, FILE_MAGIC + 8);
-        put_u64(prefix, flen);
-        put_u64(prefix, ~flen);
-        if (flen != LEN_UNKNOWN)
-            fprintf(g_log, "file %s: %llu bytes, after %.1f s preamble\n", input.c_str(), (unsigned long long)flen, preamble);
-    }
-    FileSink sink;
-    sink.raw = raw;
-    sink.out = fout;
-    if (tx_data) trd = std::thread(reader_worker, fin, &iq, prefix);
-    if (do_rx) trx = std::thread(rx_worker, usrp, &sink, rx_data, &rst);
-    if (do_tx) ttx = std::thread(tx_worker, usrp, tx_data ? &iq : nullptr, bps, &tst);
-    // time for the FPGA buffers to drain after the last byte: payload FIFO (2 KB) + 2 frames
-    const double frame_s = frame_symbols(modcod, pilots) / (fs_act / 2);
-    const double drain_s = 2048.0 / (bps * fs_act) + 3.0 * frame_s + 0.2;
+    std::thread tweb;
+    if (web) tweb = std::thread(web_server, web_port, web_bind, web_root, file_dir);
 
-    auto t0       = std::chrono::steady_clock::now();
-    bool cleared  = false;
-    while (!stop_signal) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        auto s = modem.status();
-        if (do_tx) print_tx(s, tst, tx_data);
-        if (do_rx) {
-            print_rx(s, fs_act / 2, rst, rx_data);
-            // restart the BER statistics once, after the receiver has settled
-            if (!cleared && ((s[0] >> 14) & 1) && s[10] >= 5) {
-                modem.wr(REG_CLR, 1);
-                cleared = true;
-                fprintf(g_log, "(statistics cleared after lock)\n");
+    // ---- session start: RF, rates, modem registers, threads
+    Session S;
+    Actual act;
+    auto start_session = [&](const std::string& in, const std::string& out, const std::string& name) {
+        S         = Session();
+        S.do_tx   = do_tx && tx_on;
+        S.do_rx   = do_rx && rx_on;
+        S.tx_data = S.do_tx && !in.empty();
+        S.rx_data = S.do_rx && !out.empty();
+        S.raw     = raw;
+        S.in_path = in;
+        S.in_name = name;
+        S.out_path = out;
+        act       = apply_rf(usrp, cfg, do_tx, do_rx);    // both sides configured, only the switched-on ones stream
+        S.fs_act  = do_rx ? act.fs_rx : act.fs_tx;
+        S.rs_tx   = act.fs_tx / 2;
+        S.rs_rx   = act.fs_rx / 2;
+        fprintf(g_log, "TX %s, RX %s | master clock %.3f MHz", S.do_tx ? "on" : "off", S.do_rx ? "on" : "off", act.mcr / 1e6);
+        if (S.do_tx) fprintf(g_log, " | TX %.4f MS/s (%.1f clk/sample), Rs %.4f Msym/s, %.3f MHz, gain %.1f dB",
+                       act.fs_tx / 1e6, act.mcr / act.fs_tx, S.rs_tx / 1e6, act.tx_freq / 1e6, act.tx_gain);
+        if (S.do_rx) fprintf(g_log, " | RX %.4f MS/s (%.1f clk/sample), Rs %.4f Msym/s, %.3f MHz, gain %.1f dB",
+                       act.fs_rx / 1e6, act.mcr / act.fs_rx, S.rs_rx / 1e6, act.rx_freq / 1e6, act.rx_gain);
+        fprintf(g_log, "\n");
+        if ((do_rx && act.mcr / act.fs_rx < 7.999) || (do_tx && act.mcr / act.fs_tx < 7.999))
+            throw std::runtime_error("less than 8 radio clocks per sample");
+
+        if (S.tx_data) S.fin = (in == "-") ? stdin : fopen(in.c_str(), "rb");
+        if (S.rx_data) S.fout = (out == "-") ? stdout : fopen(out.c_str(), "wb");
+        if ((S.tx_data && !S.fin) || (S.rx_data && !S.fout))
+            throw std::runtime_error("cannot open payload file " + (S.tx_data && !S.fin ? in : out));
+
+        // ---- configure the modem
+        uint32_t ctrl = CTRL_PLL | CTRL_AGC | CTRL_ES;
+        modem.wr(REG_CTRL, ctrl);                       // both parts held in reset
+        modem.wr(REG_TXCFG, uint32_t(cfg.modcod & 31) | (cfg.pilots ? 1u << 8 : 0u) | (uint32_t(cfg.ro) << 12));
+        modem.wr(REG_FEC, (uint32_t(cfg.max_iter & 63) << 16) | (16u << 8) | 24u);
+        if (S.do_tx) ctrl |= CTRL_TX_EN | (S.tx_data ? CTRL_TX_DATA : 0);
+        if (S.do_rx) ctrl |= CTRL_RX_EN | (S.rx_data ? CTRL_RX_DATA : 0);
+        modem.wr(REG_CTRL, ctrl);
+        modem.wr(REG_CLR, 1);
+        fprintf(g_log, "%s, %s, roll-off 0.%02d, %s%s\n", MODCOD_NAME[cfg.modcod], cfg.pilots ? "pilots" : "no pilots",
+            rolloff_i, S.do_tx ? (S.tx_data ? "TX payload from file " : "TX PRBS ") : "",
+            S.do_rx ? (S.rx_data ? "RX payload to file" : "RX PRBS check") : "");
+
+        // payload rate: 90 % of the frame capacity, in bytes per sample (2 samples / symbol)
+        S.bps = 0.9 * double((kbch_of(cfg.modcod) - 80) / 8) / (2.0 * frame_symbols(cfg.modcod, cfg.pilots));
+        if (S.tx_data)
+            fprintf(g_log, "payload capacity %.1f kB/s, sending at %.1f kB/s\n", S.bps / 0.9 * act.fs_tx / 1e3,
+                S.bps * act.fs_tx / 1e3);
+
+        S.tst            = std::unique_ptr<TxStats>(new TxStats());
+        S.tst->pad_bytes = 2 * uint64_t((kbch_of(cfg.modcod) - 80) / 8);
+        S.rst            = std::unique_ptr<RxStats>(new RxStats());
+        S.iq             = std::unique_ptr<InputQueue>(new InputQueue());
+        S.sink           = std::unique_ptr<FileSink>(new FileSink());
+        std::vector<uint8_t> prefix;
+        if (S.tx_data && !raw) {
+            // preamble (zero bytes while the receiver locks) + header
+            prefix.assign(size_t(std::max(0.0, preamble) * S.bps * act.fs_tx), 0);
+            uint64_t flen = LEN_UNKNOWN;
+            if (S.fin != stdin && fseek(S.fin, 0, SEEK_END) == 0) {
+                long sz = ftell(S.fin);
+                if (sz >= 0) flen = uint64_t(sz);
+                fseek(S.fin, 0, SEEK_SET);
+            }
+            prefix.insert(prefix.end(), FILE_MAGIC, FILE_MAGIC + 8);
+            put_u64(prefix, flen);
+            put_u64(prefix, ~flen);
+            if (flen != LEN_UNKNOWN)
+                fprintf(g_log, "file %s: %llu bytes, after %.1f s preamble\n", in.c_str(), (unsigned long long)flen, preamble);
+        }
+        S.sink->raw = raw;
+        S.sink->out = S.fout;
+        if (S.tx_data) S.trd = std::thread(reader_worker, S.fin, S.iq.get(), prefix);
+        if (S.do_rx) S.trx = std::thread(rx_worker, usrp, S.sink.get(), S.rx_data, S.rst.get());
+        if (S.do_tx) S.ttx = std::thread(tx_worker, usrp, S.tx_data ? S.iq.get() : nullptr, S.bps, S.tst.get());
+        S.t0 = std::chrono::steady_clock::now();
+    };
+
+    start_session(input, output, input);
+
+    // ---- web status / spectrum
+    std::vector<float> spec_db;
+    double spec_fs = 0, spec_fc = 0;
+    // file mode: the RX stream carries payload bytes, so the spectrum comes from the FPGA snapshot,
+    // read in its own thread (~0.3 s per snapshot) to keep the status at 10 Hz
+    std::mutex snap_m, snap_busy;              // snap_busy: held per snapshot and around radio reconfiguration
+    std::vector<std::complex<float>> snap_x;
+    std::atomic<bool> snap_on{false};
+    std::thread snap_thread;
+    if (web && has_cap && do_rx)
+        snap_thread = std::thread([&] {
+            while (!stop_signal) {
+                if (!snap_on) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    continue;
+                }
+                std::vector<std::complex<float>> x;
+                {
+                    std::lock_guard<std::mutex> b(snap_busy);
+                    if (snap_on) x = modem.snapshot();
+                }
+                if (x.size() == size_t(CAP_N)) {
+                    std::lock_guard<std::mutex> l(snap_m);
+                    snap_x.swap(x);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+    struct ThreadGuard {                       // also on an exception: stop and join, never std::terminate
+        std::thread& t;
+        void join()
+        {
+            if (!t.joinable()) return;
+            stop_signal = true;
+            t.join();
+        }
+        ~ThreadGuard() { join(); }
+    } snap_guard{snap_thread};
+    double update_ms = 0;                      // time of the last status + spectrum read (USB register access)
+    auto update_web = [&](const std::vector<uint32_t>& s) {
+        // spectrum: latest 1024-sample capture (Hann window, dBFS)
+        if (!S.do_rx) spec_db.clear();                    // RX off: no spectrum
+        if (S.do_rx) {
+            std::vector<std::complex<float>> x;
+            if (!S.rx_data) {                              // PRBS: raw samples from the RX stream
+                if (S.rst->tap_ready) {
+                    x.swap(S.rst->tap);
+                    S.rst->tap_ready = false;
+                }
+                S.rst->tap_req = true;
+            } else if (has_cap) {                          // file mode: FPGA snapshot (spectrum thread)
+                std::lock_guard<std::mutex> l(snap_m);
+                x.swap(snap_x);
+            }
+            if (x.size() == size_t(CAP_N)) {                // one FFT per update, no averaging
+                spec_db  = power_spectrum(x);
+                spec_fs  = S.fs_act;
+                spec_fc  = act.rx_freq;
             }
         }
-        double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        if (duration > 0 && el >= duration) stop_signal = true;
-        if (rx_data && !raw && rst.file_state == 2 && rst.file_len != LEN_UNKNOWN) {
-            fprintf(g_log, "file received: %llu bytes, seq gaps inside the file %llu%s\n",
-                (unsigned long long)rst.file_written.load(), (unsigned long long)rst.file_gaps.load(),
-                rst.file_gaps ? "  (bytes were lost: the file is incomplete)" : "");
-            if (!do_tx || !tx_data || tst.pad_done) stop_signal = true;
+        const uint32_t w0   = s[0];
+        const bool lock     = (w0 >> 4) & 1;
+        const int mc        = (w0 >> 5) & 31;
+        const uint64_t bits = (uint64_t(s[15] & 0xFFFF) << 32) | s[14];
+        std::ostringstream j;
+        j.precision(10);
+        j << "{\"fpga\":{\"version\":\"" << (s[31] >> 16) << "." << (s[31] & 0xFFFF) << "\",\"spectrum\":"
+          << (has_cap ? "true" : "false") << "},";
+        j << "\"update_ms\":" << update_ms << ",";
+        j << "\"uptime\":" << std::chrono::duration<double>(std::chrono::steady_clock::now() - S.t0).count() << ",";
+        j << "\"config\":{\"tx_freq\":" << cfg.tx_freq << ",\"tx_bw\":" << cfg.tx_bw << ",\"tx_gain\":" << cfg.tx_gain
+          << ",\"rx_freq\":" << cfg.rx_freq << ",\"rx_bw\":" << cfg.rx_bw << ",\"rx_gain\":" << cfg.rx_gain
+          << ",\"rolloff\":" << alpha << ",\"modcod\":" << jstr(MODCOD_NAME[cfg.modcod]) << ",\"pilots\":"
+          << (cfg.pilots ? "true" : "false") << "},";
+        j << "\"tx\":{\"on\":" << (S.do_tx ? "true" : "false") << ",\"freq\":" << act.tx_freq << ",\"rs\":" << S.rs_tx
+          << ",\"fs\":" << act.fs_tx << ",\"gain\":" << act.tx_gain << ",\"analog_bw\":" << act.tx_abw
+          << ",\"mcr\":" << act.mcr << ",\"frames_encoded\":" << s[17] << ",\"frames_sent\":" << s[18]
+          << ",\"dummy\":" << s[19] << ",\"duc_underflow\":" << s[26] << ",\"host_underflow\":" << S.tst->underflows
+          << ",\"mode\":" << jstr(S.tx_data ? "file" : "prbs") << ",\"file\":" << jstr(S.in_name)
+          << ",\"bytes\":" << S.tst->bytes << ",\"done\":" << (S.tst->pad_done ? "true" : "false") << "},";
+        j << "\"rx\":{\"on\":" << (S.do_rx ? "true" : "false") << ",\"freq\":" << act.rx_freq << ",\"rs\":" << S.rs_rx
+          << ",\"fs\":" << act.fs_rx << ",\"gain\":" << act.rx_gain << ",\"analog_bw\":" << act.rx_abw
+          << ",\"lock\":" << (lock ? "true" : "false") << ",\"modcod\":" << jstr(MODCOD_NAME[mc <= 16 ? mc : 11])
+          << ",\"pilots\":" << (((w0 >> 10) & 1) ? "true" : "false") << ",\"fll_stage\":" << ((w0 >> 12) & 3)
+          << ",\"cfo_hz\":" << double(int32_t(s[1])) / 4294967296.0 * S.rs_rx << ",\"agc_gain\":" << (s[5] & 0xFFFF)
+          << ",\"frames\":" << s[2] << ",\"misses\":" << s[3] << ",\"pls_fail\":" << s[4]
+          << ",\"ldpc_iters\":" << ((w0 >> 16) & 63) << ",\"ldpc_drop\":" << s[7] << ",\"bch_corr\":" << s[8]
+          << ",\"bch_fail\":" << s[9] << ",\"bb_ok\":" << s[10] << ",\"bb_crc\":" << s[11]
+          << ",\"ber_lock\":" << (((w0 >> 14) & 1) ? "true" : "false") << ",\"ber_bits\":" << bits
+          << ",\"ber_errors\":" << s[16] << ",\"host_overflow\":" << S.rst->overflows
+          << ",\"mode\":" << jstr(S.rx_data ? "file" : "prbs") << ",\"file_state\":" << S.rst->file_state
+          << ",\"file_len\":" << (S.rst->file_len == LEN_UNKNOWN ? 0 : S.rst->file_len.load())
+          << ",\"file_written\":" << S.rst->file_written << ",\"seq_gaps\":" << S.rst->file_gaps
+          << ",\"result\":" << jstr(S.result) << "}}";
+        std::ostringstream sp;
+        sp.precision(10);
+        sp << "{\"fc\":" << spec_fc << ",\"fs\":" << spec_fs << ",\"db\":[";
+        for (size_t i = 0; i < spec_db.size(); i++) sp << (i ? "," : "") << std::round(spec_db[i] * 10) / 10;
+        sp << "]}";
+        std::lock_guard<std::mutex> l(g_web.m);
+        g_web.status_json   = j.str();
+        g_web.spectrum_json = sp.str();
+    };
+
+    // file loopback (web): compare the received file with the one that was sent
+    auto compare_files = [&](const std::string& a, const std::string& b) -> std::string {
+        FILE* fa = fopen(a.c_str(), "rb");
+        FILE* fb = fopen(b.c_str(), "rb");
+        if (!fa || !fb) {
+            if (fa) fclose(fa);
+            if (fb) fclose(fb);
+            return "cannot read the files";
         }
-        if (tx_data && tst.pad_done && !do_rx) {
-            // input sent and padded: let the FPGA buffers drain, then stop
+        std::vector<char> x(1 << 20), y(1 << 20);
+        uint64_t na = 0, nb = 0, diff = 0;
+        for (;;) {
+            size_t ra = fread(x.data(), 1, x.size(), fa), rb = fread(y.data(), 1, y.size(), fb);
+            for (size_t i = 0; i < std::min(ra, rb); i++) diff += x[i] != y[i];
+            na += ra;
+            nb += rb;
+            if (ra == 0 && rb == 0) break;
+        }
+        fclose(fa);
+        fclose(fb);
+        if (na == nb && diff == 0) return "identical (" + std::to_string(na) + " bytes)";
+        return "DIFFERENT: sent " + std::to_string(na) + " B, received " + std::to_string(nb) + " B, "
+               + std::to_string(diff) + " bytes differ";
+    };
+
+    auto t_poll  = std::chrono::steady_clock::now();
+    auto t_print = t_poll;
+    while (!stop_signal) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(web ? 10 : 1000));
+        // ---- requests from the web page
+        if (web) {
+            std::map<std::string, double> pend;
+            bool rq_send = false, rq_prbs = false;
+            std::string spath, sname;
+            {
+                std::lock_guard<std::mutex> l(g_web.m);
+                pend.swap(g_web.pending);
+                rq_send = g_web.req_send;
+                rq_prbs = g_web.req_prbs;
+                spath   = g_web.send_path;
+                sname   = g_web.send_name;
+                g_web.req_send = g_web.req_prbs = false;
+            }
+            bool restart = rq_send || rq_prbs;
+            std::unique_lock<std::mutex> busy(snap_busy, std::defer_lock);
+            if (restart || !pend.empty()) busy.lock();
+            try {
+                for (auto& kv : pend) {
+                    const std::string& k = kv.first;
+                    const double v       = kv.second;
+                    if (k == "tx_freq" && do_tx) {
+                        cfg.tx_freq = v;
+                        usrp->set_tx_freq(uhd::tune_request_t(v), 0);
+                        act.tx_freq = usrp->get_tx_freq(0);
+                    } else if (k == "rx_freq" && do_rx) {
+                        cfg.rx_freq = v;
+                        usrp->set_rx_freq(uhd::tune_request_t(v), 0);
+                        act.rx_freq = usrp->get_rx_freq(0);
+                    } else if (k == "tx_gain" && do_tx) {
+                        cfg.tx_gain = v;
+                        usrp->set_tx_gain(v, 0);
+                        act.tx_gain = usrp->get_tx_gain(0);
+                    } else if (k == "rx_gain" && do_rx) {
+                        cfg.rx_gain = v;
+                        usrp->set_rx_gain(v, 0);
+                        act.rx_gain = usrp->get_rx_gain(0);
+                    } else if (k == "tx_bw" && v != cfg.tx_bw && v >= 100e3 && v <= 5.2e6) {
+                        cfg.tx_bw = v;
+                        restart   = true;
+                    } else if (k == "rx_bw" && v != cfg.rx_bw && v >= 100e3 && v <= 5.2e6) {
+                        cfg.rx_bw = v;
+                        restart   = true;
+                    } else if (k == "tx_on" && do_tx && (v != 0) != tx_on) {
+                        tx_on   = v != 0;
+                        restart = true;
+                    } else if (k == "rx_on" && do_rx && (v != 0) != rx_on) {
+                        rx_on   = v != 0;
+                        restart = true;
+                    }
+                    fprintf(g_log, "web: %s = %.6g\n", k.c_str(), v);
+                }
+                if (restart) {
+                    // keep sending the current file unless PRBS was requested
+                    std::string in = S.in_path, name = S.in_name;
+                    if (rq_prbs) in.clear(), name.clear();
+                    if (rq_send) in = spath, name = sname;
+                    if (!(tx_on && rx_on)) in.clear(), name.clear();   // file loopback needs TX and RX on
+                    S.stop(modem);
+                    std::string out = in.empty() ? "" : file_dir + "/rx_" + name;
+                    start_session(in, out, name);
+                    // UHD switches the AD9361 chains / front-end switches only when a streamer is
+                    // created; with both off nothing is created, so make it re-evaluate here
+                    if (!S.do_tx && !S.do_rx) usrp->set_tx_subdev_spec(std::string("A:A"));
+                    if (rq_send && !(tx_on && rx_on)) S.result = "TX and RX must be on to send a file";
+                    std::lock_guard<std::mutex> l(g_web.m);
+                    g_web.rx_path = out;
+                }
+            } catch (const std::exception& e) {
+                fprintf(stderr, "web request failed: %s\n", e.what());
+            }
+        }
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration<double>(now - t_poll).count() < (web ? 0.1 : 0.999)) continue;     // web: 10 Hz
+        t_poll = now;
+        snap_on = S.rx_data;
+        auto s = modem.status();
+        if (web) {
+            update_web(s);
+            update_ms = 1e3 * std::chrono::duration<double>(std::chrono::steady_clock::now() - now).count();
+        }
+        if (std::chrono::duration<double>(now - t_print).count() >= 0.999) {
+            t_print = now;
+            if (S.do_tx) print_tx(s, *S.tst, S.tx_data);
+            if (S.do_rx) print_rx(s, S.rs_rx, *S.rst, S.rx_data, S.raw);
+        }
+        // restart the BER statistics once, after the receiver has settled
+        if (S.do_rx && !S.cleared && ((s[0] >> 14) & 1) && s[10] >= 5) {
+            modem.wr(REG_CLR, 1);
+            S.cleared = true;
+            fprintf(g_log, "(statistics cleared after lock)\n");
+        }
+        double el = std::chrono::duration<double>(now - S.t0).count();
+        if (duration > 0 && el >= duration) stop_signal = true;
+        if (S.rx_data && !S.raw && S.rst->file_state == 2 && S.rst->file_len != LEN_UNKNOWN && !S.compared) {
+            S.compared = true;
+            if (S.fout && S.fout != stdout) fflush(S.fout);
+            fprintf(g_log, "file received: %llu bytes, seq gaps inside the file %llu%s\n",
+                (unsigned long long)S.rst->file_written.load(), (unsigned long long)S.rst->file_gaps.load(),
+                S.rst->file_gaps ? "  (bytes were lost: the file is incomplete)" : "");
+            if (web) {
+                S.result = compare_files(S.in_path, S.out_path);
+                fprintf(g_log, "file loopback: %s\n", S.result.c_str());
+            } else if (!S.do_tx || !S.tx_data || S.tst->pad_done)
+                stop_signal = true;
+        }
+        if (!web && S.tx_data && S.tst->pad_done && !S.do_rx) {
+            // input sent and padded: let the FPGA buffers drain (payload FIFO 2 KB + 2 frames), then stop
+            const double frame_s = frame_symbols(cfg.modcod, cfg.pilots) / S.rs_tx;
+            const double drain_s = 2048.0 / (S.bps * act.fs_tx) + 3.0 * frame_s + 0.2;
             std::this_thread::sleep_for(std::chrono::duration<double>(drain_s));
             fprintf(g_log, "input sent (%llu bytes incl. preamble and header, + %llu padding bytes)\n",
-                (unsigned long long)tst.bytes.load(), (unsigned long long)tst.pad.load());
+                (unsigned long long)S.tst->bytes.load(), (unsigned long long)S.tst->pad.load());
             stop_signal = true;
         }
     }
-    if (ttx.joinable()) ttx.join();
-    if (trx.joinable()) trx.join();
-    {
-        std::lock_guard<std::mutex> l(iq.m);
-        iq.cv.notify_all();
-    }
-    if (trd.joinable()) {
-        // a reader blocked in fread() on stdin cannot be interrupted: detach it
-        if (input == "-") trd.detach(); else trd.join();
-    }
-    modem.wr(REG_CTRL, CTRL_PLL | CTRL_AGC | CTRL_ES);    // modem off: radio back to normal
-    if (fin && fin != stdin) fclose(fin);
-    if (fout && fout != stdout) fclose(fout);
+    snap_guard.join();
+    S.stop(modem);
+    if (tweb.joinable()) tweb.join();
     fprintf(g_log, "done\n");
     return EXIT_SUCCESS;
 }

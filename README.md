@@ -13,7 +13,7 @@ TX + RX，純 PL 環回測試：TX → 通道模擬器（時脈偏差、CFO、AW
 
 ```bash
 tar xzf dvbs2_z7020_repo.tar.gz      # 或 git clone 這個 repo
-cd dvbs2_z7020
+cd dvbs2                             # 解壓／clone 出來的 repo 目錄
 ./setup_ubuntu.sh                    # 裝 Verilator / iverilog / Python / UHD，編 B210 PC 程式，跑一次 TX 回歸
 sim/run_all.sh                       # 完整回歸（約 40 分鐘）
 ```
@@ -36,7 +36,7 @@ CH  ch_emu      8-tap 多相內插（取樣偏差 ppm、分數延遲）→ CORDI
 RX  dvbs2_rx
     AGC → RRC 匹配濾波 → Gardner TED + Farrow 內插 + Rice NCO（定時恢復）
     → rx_frame：NCO 去旋轉 + 16K 符號緩衝 + 差分 SOF/PLSC 相關器（抗 CFO）
-                PLS 解碼（9 點頻率格 + FHT-32 ML）
+                PLS 解碼（9 點頻率格 + 64 點 Hadamard 串流轉換 ML）
                 三段 FLL（lag-1 → Luise-Reggiannini 16 lag → 導頻相位差）+ 迴路延遲補償
                 區塊相位內插（導頻/標頭）+ 無導頻時判決導向 PLL，增益正規化
     → 軟解映射（LLR）→ LDPC 分層 normalized min-sum（P = 45 平行、雙緩衝、提前終止）
@@ -54,7 +54,7 @@ RX  dvbs2_rx
 | `python/` | 參考模型：TX 黃金模型、位元精確 LDPC/BCH 模型、同步演算法模型 |
 | `sim/` | 測試平台（`sim/tb`）、Verilator 回歸腳本、BER 量測（`sim/ber`） |
 | `doc/register_map.md` | AXI-Lite 暫存器表 |
-| `b210/` | USRP B210 版：同一套 RTL 放進 B210 的 FPGA，加上 PC 端 UHD 程式（兩台對傳），說明見 `b210/README.md` |
+| `b210/` | USRP B210 版：同一套 RTL 放進 B210 的 FPGA，加上 PC 端 UHD 程式（兩台對傳，或一台自收自發＋網頁介面），說明見 `b210/README.md` |
 
 ## 用 Vivado 建置（2020.2 以後的版本都可以）
 
@@ -112,7 +112,7 @@ TX → 通道（CFO、取樣時脈偏差、分數延遲、AWGN）→ 定時恢�
 解映射（與 RTL 位元精確）→ LDPC（與 RTL 位元精確）→ BCH → BB 解擾、CRC → 和 PRBS 比對 BER。
 
 ```
-cd dvbs2_z7020
+cd dvbs2                                                   # repo 目錄
 python3 -m venv .venv && source .venv/bin/activate      # Homebrew 的 python 需要 venv
 pip install numpy matplotlib
 cd python
@@ -200,5 +200,3 @@ LUT 是依結構推估。實際數字請以 Vivado 的 `build/reports/utilizatio
 * 只支援 short FECFRAME；normal（64800）需要更大的 LDPC 記憶體（Z7020 的 BRAM 還放得下，但沒有實作）。
 * QPSK 9/10、16/32APSK 不支援（short frame 本來就沒有 9/10）。
 * 符號率上限 6.25 Msym/s（100 MHz、每個取樣 8 個時脈）。要更高的話，需要把接收前端改成每個時脈處理一個取樣。
-* 通道模擬器的 AWGN 是 8 個均勻分布相加的近似，尾端（> 4σ）比真正的高斯分布少，所以在極低 BER 下會略顯樂觀；
-  上面的 BER 曲線是用 C++ 產生真正的高斯雜訊，不受這點影響。

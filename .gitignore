@@ -20,3 +20,6 @@ b210/host/build/
 b210/uhd-src/
 b210/out/
 b210/build_fpga.log*
+b210/host/dvbs2_files/
+dvbs2_files/
+b210/build_fpga.out

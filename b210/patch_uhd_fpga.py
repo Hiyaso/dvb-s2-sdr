@@ -11,7 +11,11 @@ What it does (idempotent; the original files are kept as *.orig):
       - new parameter DVBS2 (default 0)
       - DUC input and DDC output routed through dvbs2_b210 when DVBS2 = 1
       - its own user-settings bus + readback (UHD "enable_user_regs" interface)
-  * fpga/usrp3/top/b200/b200_core.v   radio_0 gets DVBS2 = 1 when `DVBS2 is defined
+  * fpga/usrp3/top/b200/b200_core.v   radio_0 gets DVBS2 = 1 when `DVBS2 is defined;
+                                      the DVB-S2 build has radio 0 only (UHD reads the
+                                      number of radios from the FPGA), which leaves room
+                                      for the modem in the XC6SLX150
+  * fpga/usrp3/top/b200/b200.v        smaller extra USB buffers (2^10) in the DVB-S2 build
   * fpga/usrp3/top/b200/Makefile(.b200.inc)  new target  B210_DVBS2
 Then:   cd <uhd>/fpga/usrp3/top/b200 && make B210_DVBS2
 Result: build/usrp_b210_dvbs2_fpga.bin
@@ -169,6 +173,19 @@ def patch_core(fpga):
                  r'\1', 'radio_0 instance')
     t = sub_once(t, r'(radio_legacy\s*#\((?:(?!radio_legacy).)*?\.USER_SETTINGS\(0\),)',
                  r'\1\n      .DVBS2(DVBS2_R0),', 'radio_0 USER_SETTINGS', flags=re.S)
+    # radio 1 only in the normal B210 build
+    t = sub_once(t, r'`ifdef TARGET_B210(\s*// B210 Has two radio instances\.)',
+                 '`ifdef TARGET_B210\n `ifndef DVBS2\n  `define B210_TWO_RADIOS   // ' + MARK + '\n `endif\n`endif\n'
+                 r'`ifdef B210_TWO_RADIOS\1', 'radio_1 ifdef')
+    write(path, t)
+
+
+def patch_top(fpga):
+    path = os.path.join(fpga, 'usrp3', 'top', 'b200', 'b200.v')
+    t = read_orig(path)
+    t = sub_once(t, r'(\n(\s*)b200_core\s*#\(\s*\.EXTRA_BUFF_SIZE\()12(\))',
+                 '\n`ifdef DVBS2\n   localparam EXTRA_BUFF = 10;   // ' + MARK + ': block RAM for the modem\n'
+                 '`else\n   localparam EXTRA_BUFF = 12;\n`endif' r'\1EXTRA_BUFF\3', 'b200_core EXTRA_BUFF_SIZE')
     write(path, t)
 
 
@@ -186,7 +203,7 @@ def patch_make(fpga):
     target = ('# ' + MARK + '\n'
               'B210_DVBS2:  ##Build USRP B210 design with the DVB-S2 modem in radio 0.\n'
               '\t$(call pre_build,B210_DVBS2)\n'
-              '\t$(call ise_build,XC6SLX150,TARGET_B210=1 DVBS2=1 DVBS2_FIR_FOLD=1 SYNTHESIS=1)\n'
+              '\t$(call ise_build,XC6SLX150,TARGET_B210=1 DVBS2=1 DVBS2_FIR_FOLD=1 SPARTAN6=1 SYNTHESIS=1)\n'
               '\t$(call post_build,B210_DVBS2)\n\n')
     t = sub_once(t, r'(\nclean:)', '\n' + target.replace('\\', '\\\\') + r'\1', 'clean target')
     write(path, t)
@@ -203,6 +220,7 @@ def main():
     copy_rtl(fpga)
     patch_radio(fpga)
     patch_core(fpga)
+    patch_top(fpga)
     patch_make(fpga)
     print('done.  Build with:  cd %s && make B210_DVBS2' % os.path.join(fpga, 'usrp3', 'top', 'b200'))
 

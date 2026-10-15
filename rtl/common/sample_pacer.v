@@ -20,7 +20,7 @@ reg [31:0] mem [0:(1<<AW)-1];
 reg [AW:0] wp, rp;
 reg [3:0]  gap;
 wire empty = (wp == rp);
-wire full  = (wp - rp) == (1 << AW);
+wire full  = (wp[AW] != rp[AW]) && (wp[AW-1:0] == rp[AW-1:0]);
 always @(posedge clk) begin
     if (rst) begin
         wp <= 0; rp <= 0; gap <= 4'd0; out_valid <= 1'b0; out_i <= 0; out_q <= 0; overflow <= 1'b0;

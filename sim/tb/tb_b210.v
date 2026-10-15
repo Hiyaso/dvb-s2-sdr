@@ -104,7 +104,7 @@ end
 
 // ---------------------------------------------------------------- control + checks
 reg [31:0] ok0;
-integer i, nb, settle_bytes;
+integer i, nb, settle_bytes, cap_nz, cap_ok;
 initial begin
     repeat (20) @(posedge clk);
     rst = 0;
@@ -146,6 +146,21 @@ initial begin
     rd_b(8'd8);  $display("ber_errors=%0d tx_frames(rx board)=%0d", rbv[31:0], rbv[63:32]);
     rd_b(8'd12); $display("rx bytes to host=%0d", rbv[63:32]);
     rd_b(8'd3);  $display("ldpc dec=%0d drop=%0d", rbv[31:0], rbv[63:32]);
+    rd_b(8'd9);  $display("tx dummy frames (rx board)=%0d", rbv[63:32]);
+    // spectrum snapshot: 1024 DDC samples, read back through rb_addr[7]
+    wr_b(8'd8, 32'd1);
+    repeat (1024 * D + 200) @(posedge clk);
+    rd_b(8'd14); cap_ok = rbv[63];
+    cap_nz = 0;
+    for (i = 0; i < 4; i = i + 1) begin
+        wr_b(8'd8, i << 8);
+        for (k = 0; k < 128; k = k + 1) begin
+            rd_b(8'd128 + k[7:0]);
+            if (rbv[31:0] != 0) cap_nz = cap_nz + 1;
+            if (rbv[63:32] != 0) cap_nz = cap_nz + 1;
+        end
+    end
+    $display("spectrum snapshot: done=%0d, %0d of 1024 samples non-zero", cap_ok, cap_nz);
     // payload check: align the first byte after settling with the sent sequence
     nerr = 0; nb = 0; base = -1;
     for (k = 0; k < nsent - 8 && base < 0; k = k + 1) begin
@@ -165,7 +180,7 @@ initial begin
         end
     end
     rd_b(8'd5);
-    if (rbv[31:0] >= NOK && rbv[63:32] == 0 && (DATA ? (base >= 0 && nerr == 0 && nb > 1000 && seq_err == 0) : 1)) begin
+    if (cap_ok && cap_nz >= 1000 && rbv[31:0] >= NOK && rbv[63:32] == 0 && (DATA ? (base >= 0 && nerr == 0 && nb > 1000 && seq_err == 0) : 1)) begin
         rd_b(8'd6); if (rbv[31:0] == 0) $display("PASS"); else $display("FAIL (bch failures)");
     end else $display("FAIL");
     $finish;

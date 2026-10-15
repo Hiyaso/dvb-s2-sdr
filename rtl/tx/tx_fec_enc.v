@@ -122,8 +122,12 @@ wire        pa_re    = t1_v || par_issue;
 wire [13:0] pa_raddr = t1_v ? taddr : idx;
 wire        pa_rdata_ram;
 wire        pa_rdata;
-wire        pa_we    = t2_v || par_rd_v;
-wire [13:0] pa_waddr = t2_v ? t2_addr : par_rd_idx;
+// after reset the whole accumulator is cleared (a reset in the middle of a frame
+// would otherwise leave toggled bits behind and corrupt the next frame's parity)
+reg         clr_busy;
+reg  [13:0] clr_idx;
+wire        pa_we    = t2_v || par_rd_v || clr_busy;
+wire [13:0] pa_waddr = t2_v ? t2_addr : par_rd_v ? par_rd_idx : clr_idx;
 wire        pa_wdata = t2_v ? ~pa_rdata : 1'b0;
 ram_sdp #(.DW(1), .AW(14)) u_parram (
     .clk(clk), .we(pa_we), .waddr(pa_waddr), .wdata(pa_wdata),
@@ -135,6 +139,15 @@ always @(posedge clk) begin
     fwd_data <= pa_wdata;
 end
 assign pa_rdata = fwd_hit ? fwd_data : pa_rdata_ram;
+
+always @(posedge clk) begin
+    if (rst) begin
+        clr_busy <= 1'b1; clr_idx <= 14'd0;
+    end else if (clr_busy) begin
+        clr_idx <= clr_idx + 14'd1;
+        if (clr_idx == 14'd12959) clr_busy <= 1'b0;     // largest M (rate 1/4)
+    end
+end
 
 always @(posedge clk) begin
     if (rst) begin
@@ -167,7 +180,7 @@ always @(posedge clk) begin
 
         case (state)
         S_IDLE: begin
-            if (enable && !full[wbank]) begin
+            if (enable && !full[wbank] && !clr_busy) begin
                 modcod_r <= modcod_in;
                 pilots_r <= pilots_in;
                 state    <= S_START;

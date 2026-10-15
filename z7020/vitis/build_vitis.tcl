@@ -1,5 +1,5 @@
 # build_vitis.tcl -- Vitis (classic, 2020.2 .. 2023.1) bare-metal application for the
-# DVB-S2 loopback, built from the XSA exported by vivado/build.tcl.
+# DVB-S2 loopback, built from the XSA exported by z7020/vivado/build.tcl.
 #   xsct build_vitis.tcl
 # Result: vitis/ws/dvbs2_demo/Debug/dvbs2_demo.elf  (+ platform dvbs2_platform)
 set here [file normalize [file dirname [info script]]]

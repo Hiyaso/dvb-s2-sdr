@@ -6,7 +6,7 @@
 #   ./setup_ubuntu.sh --check    install nothing, only report what is missing
 #
 # Not installed by this script (vendor downloads + licenses):
-#   * Xilinx Vivado  (Z7020 / PYNQ-Z2 bitstream, XSim)      -> vivado/
+#   * Xilinx Vivado  (Z7020 / PYNQ-Z2 bitstream, XSim)      -> z7020/vivado/
 #   * Xilinx ISE 14.7 (USRP B210 FPGA image, LX150 licence)  -> b210/build_fpga.sh
 set -e
 cd "$(dirname "$0")"

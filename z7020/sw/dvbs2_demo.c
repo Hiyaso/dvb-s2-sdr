@@ -20,7 +20,7 @@
 #endif
 #define FCLK_HZ    100000000.0           /* FCLK_CLK0 */
 
-/* ---- register offsets (doc/register_map.md) ---- */
+/* ---- register offsets (z7020/doc/register_map.md) ---- */
 #define R_ID        0x000
 #define R_VERSION   0x004
 #define R_CTRL      0x008

@@ -68,7 +68,7 @@ struct Modem {
         std::lock_guard<std::mutex> l(m);
         regs->poke32(4 * reg, v);
     }
-    // status words 0..31 (see rtl/b210/dvbs2_b210.v)
+    // status words 0..31 (see b210/rtl/dvbs2_b210.v)
     std::atomic<int> prio{0};                  // status() waiting: snapshot reads step aside
     std::vector<uint32_t> status()
     {

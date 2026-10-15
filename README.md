@@ -1,19 +1,24 @@
-# DVB-S2 基頻收發機（Zynq-7020，PL 環回）
+# DVB-S2 基頻收發機 Verilog（TX + RX）
 
-在 xc7z020clg400-1（PYNQ-Z2 / Zybo Z7-20）上實作的完整 DVB-S2（EN 302 307-1）基頻
-TX + RX，純 PL 環回測試：TX → 通道模擬器（時脈偏差、CFO、AWGN）→ RX，PS 端透過 AXI-Lite
-設定參數、讀取同步狀態與 BER。
+完整的 DVB-S2（EN 302 307-1）基頻 TX + RX，Verilog-2001，同一套 RTL 用在兩個硬體專案：
+
+* **`z7020/`**：Zynq-7020（PYNQ-Z2 / Zybo Z7-20）PL 環回：TX → 通道模擬器（時脈偏差、CFO、AWGN）→ RX，
+  PS 端透過 AXI-Lite 設定參數、讀取同步狀態與 BER。Vivado。說明見 `z7020/README.md`。
+* **`b210/`**：USRP B210（Spartan-6 XC6SLX150）：數據機放進 UHD 的 FPGA，加上 PC 端 UHD 程式
+  （兩台對傳，或一台自收自發＋網頁介面）。ISE 14.7。說明見 `b210/README.md`。
+
+共同規格：
 
 * 調變／編碼：QPSK 1/4 … 8/9、8PSK 3/5 … 8/9，**short FECFRAME（16200）**，導頻開或關，
   roll-off 0.35 / 0.25 / 0.20，dummy 幀
-* 時脈 100 MHz（FCLK_CLK0），符號率 `100 MHz / (2·DIV)`，DIV ≥ 8 → 最高 6.25 Msym/s
-* 全部 Verilog-2001，ROM 由 Python 參考模型產生；LDPC 解碼器與 Python 模型位元精確
+* 每個取樣至少 8 個時脈（Z7020：100 MHz、DIV ≥ 8 → 最高 6.25 Msym/s；B210：master clock ≥ 8 × 取樣率）
+* ROM 由 Python 參考模型產生；TX 與黃金模型、LDPC／BCH 解碼器與 Python 模型位元精確
 
 ## 在另一台 Ubuntu 上使用（快速開始）
 
 ```bash
 tar xzf dvbs2_z7020_repo.tar.gz      # 或 git clone 這個 repo
-cd dvbs2                             # 解壓／clone 出來的 repo 目錄
+cd dvbs2                             # repo 目錄
 ./setup_ubuntu.sh                    # 裝 Verilator / iverilog / Python / UHD，編 B210 PC 程式，跑一次 TX 回歸
 sim/run_all.sh                       # 完整回歸（約 40 分鐘）
 ```
@@ -47,52 +52,18 @@ RX  dvbs2_rx
 
 | 目錄 | 內容 |
 |---|---|
-| `rtl/tx` `rtl/rx` `rtl/top` `rtl/common` | RTL（頂層 `rtl/top/dvbs2_loopback_top.v`） |
+| `rtl/tx` `rtl/rx` `rtl/common` | 數據機 RTL（`dvbs2_tx`、`dvbs2_rx`、共用元件，通道模擬器 `ch_emu` 也在 `rtl/common`） |
 | `rtl/gen` | 由 `python/gen_rtl_roms.py` 產生的 ROM／參數表（已附上，不需重產） |
-| `vivado/` | 建專案、Block Design、合成實作、模擬的 Tcl，以及 XDC |
-| `sw/` | `dvbs2_demo.c`（Vitis 裸機）、`dvbs2_pynq.py`（PYNQ） |
-| `python/` | 參考模型：TX 黃金模型、位元精確 LDPC/BCH 模型、同步演算法模型 |
-| `sim/` | 測試平台（`sim/tb`）、Verilator 回歸腳本、BER 量測（`sim/ber`） |
-| `doc/register_map.md` | AXI-Lite 暫存器表 |
-| `b210/` | USRP B210 版：同一套 RTL 放進 B210 的 FPGA，加上 PC 端 UHD 程式（兩台對傳，或一台自收自發＋網頁介面），說明見 `b210/README.md` |
-
-## 用 Vivado 建置（2020.2 以後的版本都可以）
-
-```
-cd vivado
-vivado -mode batch -source create_project.tcl -tclargs pynq-z2     # 或 zybo-z7-20 / generic
-vivado -mode batch -source build.tcl                               # 合成 + 實作 + bitstream
-```
-
-* 產出：`vivado/build/dvbs2_z7020.bit`、`.hwh`（PYNQ 用）、`.xsa`（Vitis 用）、`build/reports/`
-  （使用率、時序、功耗）。結束時會印出 WNS/WHS，時序不過會出現 CRITICAL WARNING。
-* 板子的 board files 需要先安裝（PYNQ-Z2：TUL；Zybo：Digilent vivado-boards）。找不到時，
-  會改用裸 part 和通用的 PS7 設定，這時要自己確認 DDR 參數。
-* 也可以用 GUI 開 `vivado/build/dvbs2_z7020/dvbs2_z7020.xpr`。
-* 位址：`dvbs2_0` 在 `0x43C0_0000`（4 KB）。LED：[0] 幀鎖定、[1] BER 鎖定、[2] 收到正確 BBFRAME 時閃爍、[3] 心跳。
-
-## 上板執行
-
-**PYNQ-Z2**：把 `dvbs2_z7020.bit`、`dvbs2_z7020.hwh`、`sw/dvbs2_pynq.py` 複製到板子上（檔名要一致），然後：
-
-```python
-from dvbs2_pynq import DVBS2
-d = DVBS2('dvbs2_z7020.bit')
-d.configure(modcod=13, pilots=True)          # 8PSK 2/3
-d.set_channel(esn0_db=9.0, cfo_rs=0.01, ppm=20)
-d.status()
-d.ber_sweep(4, [0.5, 1.0, 1.5, 2.0])         # QPSK 1/2 的 BER/FER 掃描
-```
-
-**Vitis 裸機**：用 `dvbs2_z7020.xsa` 建 platform，建一個 standalone 空白 C 應用程式，加入
-`sw/dvbs2_demo.c`，linker 加上 `-lm`。UART 115200 會印出鎖定狀態和 BER 掃描結果。
+| `python/` | 參考模型：TX 黃金模型、位元精確 LDPC/BCH 模型、同步演算法模型、端到端模型 |
+| `sim/` | 數據機測試平台（`sim/tb`）、Verilator 回歸腳本、BER 量測（`sim/ber`） |
+| `setup_ubuntu.sh` | 安裝開發環境（Verilator、iverilog、Python、UHD） |
+| `z7020/` | Zynq-7020 專案：頂層 RTL（`z7020/rtl`）、Vivado／Vitis 腳本、PS 軟體、AXI-Lite 暫存器表、Windows 批次檔 |
+| `b210/` | USRP B210 專案：B210 外殼 RTL（`b210/rtl`）、UHD FPGA patch 與 ISE 建置、PC 程式與網頁介面、雙板模擬 |
 
 ## 模擬
 
-* Vivado xsim：`vivado -mode batch -source vivado/sim.tcl -tclargs tb_sys MODCOD=13 NOISE=4487 CFO=4294967`
-  （`tb_sys` 是完整環回，`tb_top` 走 AXI-Lite 設定整個頂層）
-* Verilator（Linux 或 macOS，速度約快 50 倍）：`sim/run_all.sh` 一次跑完下表的快速回歸
-  （約 40 分鐘；`./run_all.sh full` 會再加上 10 種完整環回情境），個別腳本如下：
+Verilator（Linux 或 macOS）：`sim/run_all.sh` 一次跑完下表的快速回歸
+（約 40 分鐘；`./run_all.sh full` 會再加上 10 種完整環回情境），個別腳本如下：
 
 | 腳本 | 內容 |
 |---|---|
@@ -101,9 +72,13 @@ d.ber_sweep(4, [0.5, 1.0, 1.5, 2.0])         # QPSK 1/2 的 BER/FER 掃描
 | `sim/reg_bch.sh` | BCH 解碼器（0–12 個錯誤、不可更正幀） |
 | `sim/reg_fec.sh` | 解映射 + LDPC + BCH 串接 |
 | `sim/reg_rxfe.sh` | AGC + 定時恢復（±200 ppm、Es/N0 0–10 dB） |
-| `sim/reg_sys.sh full` | 完整環回 10 種情境（CFO 最大 2 % Rs、±50 ppm、無導頻、各種 roll-off） |
-| `sim/reg_b210.sh` | B210 版：兩塊板子＋通道模型，PRBS 和檔案傳輸 |
+| `sim/reg_sys.sh full` | 完整環回 `dvbs2_tx → ch_emu → dvbs2_rx` 10 種情境（CFO 最大 2 % Rs、±50 ppm、無導頻、各種 roll-off） |
+| `b210/sim/reg_b210.sh` | B210 版：兩塊板子＋通道模型，PRBS 和檔案傳輸（輸出在 `b210/sim/out`） |
 | `sim/ber/ber_sweep.py` | BER 曲線（RTL LDPC + BCH，理想同步） |
+
+* `sim/vl.sh <tb> <outdir>` 編譯單一測試平台：依序在 `sim/tb`、`b210/sim`、`z7020/sim` 找 `<tb>.v`，
+  板子專案的測試平台會再加上該專案的 `rtl/`。
+* Vivado xsim（Z7020 專案）見 `z7020/README.md`。
 
 ### 在 Mac 上驗證
 
@@ -179,21 +154,6 @@ LDPC／BCH 解碼器直接用 Verilator 跑 RTL。每個點量到 2×10⁷ bits�
 
 `sim/reg_sys.sh full` 的 10 種情境（CFO 最大 2 % Rs、±50 ppm、無導頻、roll-off 0.20/0.25/0.35、
 QPSK 1/4 到 8PSK 8/9）收斂後都是 0 錯誤。
-
-## 資源（估計）
-
-下表是估計值：TX 和通道模擬器用 Yosys（`synth_xilinx`）合成得到；RX 的記憶體和乘法器依 RTL 結構逐一計算，
-LUT 是依結構推估。實際數字請以 Vivado 的 `build/reports/utilization.rpt` 為準。
-
-| 模組 | LUT | FF | DSP48 | BRAM36 |
-|---|---|---|---|---|
-| TX（BB、BCH/LDPC 編碼、成形） | ~2.4K | ~2.3K | 34 | 2.5 |
-| 通道模擬器 | ~2.1K | ~1.7K | 22 | 0 |
-| RX 前端（AGC、匹配濾波、定時恢復） | ~2.5K | ~2K | ~40 | 0 |
-| RX 幀同步（相關器、PLS、FLL/PLL、16K 符號緩衝） | ~7K | ~9K | ~25 | 12 |
-| LDPC 解碼器（P = 45，雙緩衝） | ~11K | ~8K | 0 | ~42 |
-| BCH 解碼器、解映射、BB 輸出、暫存器 | ~4K | ~3K | ~4 | 1 |
-| **合計（xc7z020：53.2K LUT／106K FF／220 DSP／140 BRAM36）** | **~29K（55%）** | **~26K（25%）** | **~125（57%）** | **~58（41%）** |
 
 ## 已知限制
 

@@ -1,6 +1,6 @@
 # DVB-S2 on USRP B210（Ubuntu）
 
-這是和 Z7020 版完全相同的 DVB-S2 Verilog（TX＋RX、short frame、QPSK／8PSK），
+這是 repo 根目錄的 DVB-S2 Verilog（`../rtl`，和 Z7020 版完全相同；TX＋RX、short frame、QPSK／8PSK），
 放進 USRP B210 的 FPGA（Spartan-6 XC6SLX150），位置在主機串流和 radio 的 DUC／DDC 之間。
 **PC 程式啟動時，UHD 會把這顆 FPGA image 載入 B210**；之後由 PC 下設定、讀狀態、收送資料。
 也可以只用一台 B210 自收自發，並用瀏覽器看 TX／RX 狀態和接收頻譜（見「4. 網頁模式」）。
@@ -19,13 +19,13 @@ B210 FPGA radio 0                               B210 FPGA radio 0
 
 | 檔案 | 內容 |
 |---|---|
-| `../rtl/b210/dvbs2_b210.v` | 包在 `radio_legacy` 裡的外殼：使用者暫存器、TX/RX 資料路徑、狀態讀回 |
-| `../rtl/b210/b210_fifo.v` | FIFO |
+| `rtl/dvbs2_b210.v` | 包在 `radio_legacy` 裡的外殼：使用者暫存器、TX/RX 資料路徑、狀態讀回 |
+| `rtl/b210_fifo.v` | FIFO |
 | `patch_uhd_fpga.py` | 把 DVB-S2 加進 UHD 原始碼的 B210 FPGA，並新增 `make B210_DVBS2` 目標 |
 | `build_fpga.sh` | 一鍵完成：抓和已安裝版本相同的 UHD 原始碼 → patch → 用 ISE 編譯 |
 | `host/dvbs2_b210.cpp` | PC 端程式（UHD C++），用 `host/build.sh` 編譯；`--web` 時內建網頁伺服器 |
 | `host/web/index.html` | 網頁介面（TX／RX 設定、狀態、頻譜、傳檔） |
-| `../sim/reg_b210.sh` | 模擬：兩台「B210」中間接通道模型，PRBS 和檔案傳輸兩種模式都測 |
+| `sim/reg_b210.sh`、`sim/tb_b210.v` | 模擬：兩台「B210」中間接通道模型，PRBS 和檔案傳輸兩種模式都測 |
 
 ## 需要的東西
 
@@ -168,11 +168,11 @@ cd b210/host/build
 |---|---|---|
 | 0 | CTRL | [0] tx_en、[1] rx_en、[2] TX 資料來自主機、[3] RX 位元組送回主機、[6] DD-PLL、[7] AGC、[8] LDPC 提前終止 |
 | 1 | TXCFG | [4:0] MODCOD、[8] 導頻、[13:12] roll-off（TX 和 RX 共用） |
-| 2–6 | AGC / TIM / FS / FLL / FEC | 編碼和 `doc/register_map.md` 的 0x030–0x040 相同 |
+| 2–6 | AGC / TIM / FS / FLL / FEC | 編碼和 `../z7020/doc/register_map.md` 的 0x030–0x040 相同 |
 | 7 | CLR | 任意寫入就清除統計 |
 | 8 | SNAP | 頻譜快照：寫入 [0]=1 開始抓 1024 個連續 DDC 取樣；[9:8] 選讀回的頁（每頁 256 個取樣） |
 
-狀態字 0–21 和 Z7020 版相同（`doc/register_map.md` 0x080 起：鎖定、MODCOD、CFO、幀數、LDPC、BCH、BER、TX 計數等）。
+狀態字 0–21 和 Z7020 版相同（`../z7020/doc/register_map.md` 0x080 起：鎖定、MODCOD、CFO、幀數、LDPC、BCH、BER、TX 計數等）。
 B210 專用的狀態字：
 
 | 字 | 內容 |

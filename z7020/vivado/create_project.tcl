@@ -10,7 +10,8 @@ set board "pynq-z2"
 if { $argc > 0 } { set board [lindex $argv 0] }
 
 set here    [file normalize [file dirname [info script]]]
-set root    [file normalize "$here/.."]
+set zroot   [file normalize "$here/.."]
+set root    [file normalize "$here/../.."]
 set projdir [file normalize "$here/build"]
 set projname dvbs2_z7020
 set part    xc7z020clg400-1
@@ -44,12 +45,12 @@ set rtl_files [concat \
     [glob -nocomplain "$root/rtl/common/*.v"] \
     [glob -nocomplain "$root/rtl/tx/*.v"] \
     [glob -nocomplain "$root/rtl/rx/*.v"] \
-    [glob -nocomplain "$root/rtl/top/*.v"]]
+    [glob -nocomplain "$zroot/rtl/*.v"]]
 add_files -norecurse -fileset sources_1 $rtl_files
 update_compile_order -fileset sources_1
 
 # ---------------------------------------------------------------- simulation sources
-add_files -norecurse -fileset sim_1 [list "$root/sim/tb/tb_sys.v" "$root/sim/tb/tb_top.v"]
+add_files -norecurse -fileset sim_1 [list "$root/sim/tb/tb_sys.v" "$zroot/sim/tb_top.v"]
 set_property top tb_sys [get_filesets sim_1]
 set_property -name {xsim.simulate.runtime} -value {all} -objects [get_filesets sim_1]
 

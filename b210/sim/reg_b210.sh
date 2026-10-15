@@ -1,13 +1,14 @@
 #!/bin/bash
-# B210 integration test: two dvbs2_b210 instances (TX board, RX board) + channel emulator.
+# B210 integration test (outputs in b210/sim/out): two dvbs2_b210 instances (TX board, RX board) + channel emulator.
 cd "$(dirname "$0")"
+VL=../../sim/vl.sh
 to() { local t=$1; shift
   if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$t" "$@"
   else "$@"; fi; }
 run() { # name modcod pilots data noise [extra verilator args]
   d=out/reg_b210/$1; mkdir -p $d
-  ./vl.sh tb_b210 $d -GMODCOD=$2 -GPILOTS=$3 -GDATA=$4 -GNOISE=$5 "${@:6}" +define+DVBS2_FIR_FOLD +define+SPARTAN6 > /dev/null || { echo "$1: BUILD FAIL"; return; }
+  $VL tb_b210 $d -GMODCOD=$2 -GPILOTS=$3 -GDATA=$4 -GNOISE=$5 "${@:6}" +define+DVBS2_FIR_FOLD +define+SPARTAN6 > /dev/null || { echo "$1: BUILD FAIL"; return; }
   (cd $d && to 5000 ./obj/tb_b210 > sim.log)
   echo "$1: $(grep -E 'payload|ber_errors|PASS|FAIL' $d/sim.log | tr '\n' ' ')"
 }

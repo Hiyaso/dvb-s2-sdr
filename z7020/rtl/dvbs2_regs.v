@@ -1,5 +1,5 @@
 // dvbs2_regs.v -- AXI4-Lite register file for the DVB-S2 loopback system.
-// Register map: see doc/register_map.md (offsets in bytes).
+// Register map: see z7020/doc/register_map.md (offsets in bytes).
 `timescale 1ns/1ps
 module dvbs2_regs (
     input  wire        clk,

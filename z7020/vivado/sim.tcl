@@ -1,7 +1,7 @@
 # sim.tcl -- behavioural simulation of the full loopback in Vivado xsim.
 #   vivado -mode batch -source sim.tcl [-tclargs <testbench> <generic=value> ...]
 #   e.g. -tclargs tb_sys MODCOD=13 NOISE=5033 CFO=12884902 NOK=8
-# (The regression scripts in ../sim use Verilator, which is ~50x faster.)
+# (The regression scripts in ../../sim use Verilator, which is ~50x faster.)
 set here [file normalize [file dirname [info script]]]
 # Windows: if NoDefaultCurrentDirectoryInExePath is set (some tools set it), cmd cannot find
 # xsim's compile.bat / elaborate.bat in the run directory -> clear it for this Vivado process

@@ -1,5 +1,5 @@
 // tb_top.v -- top-level test through the AXI4-Lite register interface, the way
-// the PS software drives the design (see sw/dvbs2_demo.c).
+// the PS software drives the design (see z7020/sw/dvbs2_demo.c).
 `timescale 1ns/1ps
 module tb_top;
 reg clk = 0, rstn = 0;

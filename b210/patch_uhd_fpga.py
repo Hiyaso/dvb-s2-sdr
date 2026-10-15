@@ -34,8 +34,8 @@ RTL = {
             'ldpc_llr_init.v', 'bch_gen_poly.v', 'bch_chien_rom.v', 'rrc_coef_rom.v', 'pilot_gold_rom.v'],
     'tx': None,          # all files
     'rx': None,
-    'b210': None,
 }
+B210_RTL = os.path.join(HERE, 'rtl')   # dvbs2_b210 wrapper + FIFO (all files)
 MARK = 'DVBS2-PATCH'
 
 
@@ -78,8 +78,8 @@ def copy_rtl(fpga):
     dst = os.path.join(fpga, 'usrp3', 'lib', 'dvbs2')
     os.makedirs(dst, exist_ok=True)
     files = []
-    for sub, names in RTL.items():
-        src = os.path.join(ROOT, 'rtl', sub)
+    dirs = [(os.path.join(ROOT, 'rtl', sub), names) for sub, names in RTL.items()]
+    for src, names in dirs + [(B210_RTL, None)]:
         if names is None:
             names = sorted(f for f in os.listdir(src) if f.endswith('.v'))
         for n in names:
@@ -132,7 +132,7 @@ def patch_radio(fpga):
     # the modem itself, at the end of the module
     block = r'''
    // ////////////////////////////////////////////////////////////////////////////
-   // %s: DVB-S2 modem (rtl/b210/dvbs2_b210.v) between the host streams and DUC/DDC
+   // %s: DVB-S2 modem (b210/rtl/dvbs2_b210.v) between the host streams and DUC/DDC
    generate
    if (DVBS2 != 0) begin : g_dvbs2
       wire           dv_set_stb;

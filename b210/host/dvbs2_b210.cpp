@@ -5,9 +5,10 @@
 //   * sets RF (frequency, gain, analog bandwidth, antenna), master clock and sample rate
 //     (2 x symbol rate; symbol rate = bandwidth / (1 + roll-off) or --rs)
 //   * configures the modem through the UHD user-settings registers
-//   * TX: keeps the TX stream running; optional payload bytes from a file / stdin
+//   * TX: keeps the TX stream running; optional payload bytes from a file / stdin,
+//         or UDP datagrams (--udp-in, framed as in udp_frame.hpp)
 //   * RX: reports lock / MODCOD / CFO / FEC / BER once per second; optional payload
-//         bytes to a file / stdout
+//         bytes to a file / stdout, or the recovered UDP datagrams (--udp-out)
 //   * --web PORT: web page with TX/RX status, received spectrum and file loopback;
 //         TX/RX frequency, bandwidth and gain can be changed while running
 //
@@ -22,6 +23,7 @@
 #include <uhd/utils/thread.hpp>
 #include <boost/program_options.hpp>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -45,6 +47,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "udp_frame.hpp"
 
 namespace po = boost::program_options;
 
@@ -143,9 +146,10 @@ static bool running() { return !stop_signal && !sess_stop; }
 
 // ---------------------------------------------------------------- TX thread
 struct TxStats {
-    std::atomic<uint64_t> samples{0}, bytes{0}, pad{0}, underflows{0};
+    std::atomic<uint64_t> samples{0}, bytes{0}, pad{0}, fill{0}, underflows{0};
     std::atomic<bool> pad_done{false};
     uint64_t pad_bytes = 0;      // zero bytes appended after the end of the input (flushes the last frame)
+    // fill: zero bytes that complete a BBFRAME while the (UDP) input is idle
 };
 
 // ---------------------------------------------------------------- file framing
@@ -234,7 +238,89 @@ static void reader_worker(FILE* in, InputQueue* iq, std::vector<uint8_t> prefix)
     }
 }
 
-static void tx_worker(uhd::usrp::multi_usrp::sptr usrp, InputQueue* iq, double bytes_per_sample, TxStats* st)
+// ---------------------------------------------------------------- UDP
+// "[host:]port" (host default def_host) -> IPv4 address
+static sockaddr_in udp_addr(const std::string& s, const std::string& def_host)
+{
+    const size_t c         = s.rfind(':');
+    const std::string host = c == std::string::npos ? def_host : s.substr(0, c);
+    const std::string port = c == std::string::npos ? s : s.substr(c + 1);
+    addrinfo hints{}, *res = nullptr;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    if (host.empty() || port.empty() || getaddrinfo(host.c_str(), port.c_str(), &hints, &res) != 0 || !res)
+        throw std::runtime_error("bad UDP address '" + s + "' (expected [host:]port)");
+    sockaddr_in a;
+    std::memcpy(&a, res->ai_addr, sizeof(a));
+    freeaddrinfo(res);
+    return a;
+}
+static std::string addr_str(const sockaddr_in& a)
+{
+    char b[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &a.sin_addr, b, sizeof(b));
+    return std::string(b) + ":" + std::to_string(ntohs(a.sin_port));
+}
+
+// TX: datagrams received on a UDP port, framed into the payload queue
+struct UdpIn {
+    int fd = -1;
+    size_t limit = 0;            // queue limit (bytes): a datagram that does not fit is dropped
+    std::atomic<uint64_t> packets{0}, bytes{0}, drops{0};
+    ~UdpIn()
+    {
+        if (fd >= 0) close(fd);
+    }
+};
+static void udp_reader_worker(UdpIn* u, InputQueue* iq)
+{
+    std::vector<uint8_t> b(UDP_MAX_PAYLOAD), f;
+    uint16_t seq = 0;
+    while (running()) {
+        const ssize_t got = recv(u->fd, b.data(), b.size(), 0);    // 0.1 s timeout (SO_RCVTIMEO)
+        if (got < 0) continue;
+        f.clear();
+        udp_frame(b.data(), size_t(got), seq, f);
+        std::lock_guard<std::mutex> l(iq->m);
+        // a datagram is queued as a whole (the TX pads only at datagram boundaries);
+        // when the radio link is slower than the input, datagrams are dropped, not delayed
+        if (!iq->q.empty() && iq->q.size() + f.size() > u->limit) {
+            u->drops++;
+            continue;
+        }
+        iq->q.insert(iq->q.end(), f.begin(), f.end());
+        seq++;
+        u->packets++;
+        u->bytes += size_t(got);
+    }
+}
+
+// RX: recovered datagrams sent to a UDP address
+struct UdpOut {
+    int fd = -1;
+    sockaddr_in dst{};
+    UdpDeframer df;
+    std::vector<uint8_t> pkt;
+    std::atomic<uint64_t> packets{0}, bytes{0}, bad{0}, lost{0}, send_err{0};
+    ~UdpOut()
+    {
+        if (fd >= 0) close(fd);
+    }
+    void flush()
+    {
+        while (df.next(pkt)) {
+            if (sendto(fd, pkt.data(), pkt.size(), 0, (const sockaddr*)&dst, sizeof(dst)) < 0)
+                send_err++;
+            packets++;
+            bytes += pkt.size();
+        }
+        bad  = df.bad;
+        lost = df.lost;
+    }
+};
+
+static void tx_worker(uhd::usrp::multi_usrp::sptr usrp, InputQueue* iq, double bytes_per_sample, size_t fill_frame,
+    TxStats* st)
 {
     std::atomic<bool> async_stop{false};
     std::thread async;
@@ -260,6 +346,7 @@ static void tx_worker(uhd::usrp::multi_usrp::sptr usrp, InputQueue* iq, double b
             }
         });
         double acc = 0.0;
+        uint64_t sent = 0;       // bytes given to the FPGA: BBFRAMEs take exactly fill_frame bytes each
         std::vector<uint8_t> chunk;
         while (running()) {
             // take at most the bytes needed for this buffer from the input queue
@@ -275,6 +362,9 @@ static void tx_worker(uhd::usrp::multi_usrp::sptr usrp, InputQueue* iq, double b
                 eof = iq->eof && iq->q.empty();
                 iq->cv.notify_one();
             }
+            // queue empty: fill_frame > 0 (UDP) completes the BBFRAME with zero bytes so the last
+            // datagram goes out now (the queue holds whole datagrams, so this is between two of them)
+            const bool fill = fill_frame && chunk.size() < want;
             size_t ci = 0;
             for (size_t i = 0; i < n; i++) {
                 int16_t I = 0;
@@ -284,6 +374,12 @@ static void tx_worker(uhd::usrp::multi_usrp::sptr usrp, InputQueue* iq, double b
                         if (ci < chunk.size()) {
                             I = int16_t(0x100 | chunk[ci++]);      // valid flag + payload byte
                             st->bytes++;
+                            sent++;
+                            acc -= 1.0;
+                        } else if (fill && sent % fill_frame) {
+                            I = int16_t(0x100);
+                            st->fill++;
+                            sent++;
                             acc -= 1.0;
                         } else if (eof) {
                             // input finished: pad with zeros so the last BBFRAME is completed and sent
@@ -326,7 +422,7 @@ struct RxStats {
     std::atomic<bool> tap_req{false}, tap_ready{false};
     std::vector<std::complex<float>> tap;
 };
-static void rx_worker(uhd::usrp::multi_usrp::sptr usrp, FileSink* sink, bool data_mode, RxStats* st)
+static void rx_worker(uhd::usrp::multi_usrp::sptr usrp, FileSink* sink, UdpOut* usink, bool data_mode, RxStats* st)
 try {
     uhd::set_thread_priority_safe();
     uhd::stream_args_t sa("sc16", "sc16");
@@ -372,15 +468,20 @@ try {
             if (have_seq && seq != uint16_t(last_seq + 1)) {
                 st->seq_gaps++;
                 if (sink->state == 1) st->file_gaps++;
+                if (usink) usink->df.gap();
             }
             last_seq = seq;
             have_seq = true;
             st->bytes++;
-            sink->byte(uint8_t(I & 0xFF));
+            if (usink)
+                usink->df.push(uint8_t(I & 0xFF));
+            else
+                sink->byte(uint8_t(I & 0xFF));
             if (I & 0x200)
                 st->frames_out++;
         }
         sink->flush();
+        if (usink) usink->flush();
         st->file_state   = sink->state;
         st->file_len     = sink->len;
         st->file_written = sink->written;
@@ -394,7 +495,8 @@ try {
 }
 
 // ---------------------------------------------------------------- status printing
-static void print_rx(const std::vector<uint32_t>& s, double rs, const RxStats& rst, bool data_mode, bool raw)
+static void print_rx(const std::vector<uint32_t>& s, double rs, const RxStats& rst, bool data_mode, bool raw,
+    const UdpOut* u)
 {
     uint32_t w0   = s[0];
     bool lock     = (w0 >> 4) & 1;
@@ -414,7 +516,11 @@ static void print_rx(const std::vector<uint32_t>& s, double rs, const RxStats& r
         fprintf(g_log, " | payload %llu B, seq gaps %llu", (unsigned long long)rst.bytes.load(),
             (unsigned long long)rst.seq_gaps.load());
         int fs = rst.file_state;
-        if (raw)
+        if (u)
+            fprintf(g_log, " | udp out %llu pkt %llu B, lost %llu, bad CRC %llu%s", (unsigned long long)u->packets.load(),
+                (unsigned long long)u->bytes.load(), (unsigned long long)u->lost.load(),
+                (unsigned long long)u->bad.load(), u->send_err ? " (sendto errors)" : "");
+        else if (raw)
             fprintf(g_log, " | raw: %llu B", (unsigned long long)rst.file_written.load());
         else if (fs == 0)
             fprintf(g_log, " | file: waiting for header");
@@ -431,7 +537,7 @@ static void print_rx(const std::vector<uint32_t>& s, double rs, const RxStats& r
     fprintf(g_log, "\n");
     fflush(g_log);
 }
-static void print_tx(const std::vector<uint32_t>& s, const TxStats& tst, bool data_mode)
+static void print_tx(const std::vector<uint32_t>& s, const TxStats& tst, bool data_mode, const UdpIn* u)
 {
     fprintf(g_log, "TX frames encoded %u sent %u dummy %u | DUC underflow %u | samples %llu", s[17], s[18], s[19],
         s[26], (unsigned long long)tst.samples.load());
@@ -440,6 +546,10 @@ static void print_tx(const std::vector<uint32_t>& s, const TxStats& tst, bool da
     if (data_mode)
         fprintf(g_log, " | payload in %llu B (FPGA %u, overflow %u, buffered %u)", (unsigned long long)tst.bytes.load(),
             s[23], s[24], s[22] >> 20);
+    if (u)
+        fprintf(g_log, " | udp in %llu pkt %llu B, dropped %llu, fill %llu B", (unsigned long long)u->packets.load(),
+            (unsigned long long)u->bytes.load(), (unsigned long long)u->drops.load(),
+            (unsigned long long)tst.fill.load());
     fprintf(g_log, "\n");
     fflush(g_log);
 }
@@ -828,6 +938,8 @@ struct Session {
     std::unique_ptr<RxStats> rst;
     std::unique_ptr<InputQueue> iq;
     std::unique_ptr<FileSink> sink;
+    std::unique_ptr<UdpIn> uin;
+    std::unique_ptr<UdpOut> uout;
     std::thread ttx, trx, trd;
     std::chrono::steady_clock::time_point t0;
     bool cleared = false, compared = false;
@@ -850,6 +962,8 @@ struct Session {
         if (fin && fin != stdin) fclose(fin);
         if (fout && fout != stdout) fclose(fout);
         fin = fout = nullptr;
+        uin.reset();
+        uout.reset();
         sess_stop  = false;
     }
 };
@@ -892,7 +1006,7 @@ static Actual apply_rf(uhd::usrp::multi_usrp::sptr usrp, const Config& c, bool d
 
 int UHD_SAFE_MAIN(int argc, char* argv[])
 {
-    std::string args, fpga, mode, input, output, tx_ant, rx_ant, ref, web_bind, web_root, file_dir;
+    std::string args, fpga, mode, input, output, udp_in, udp_out, tx_ant, rx_ant, ref, web_bind, web_root, file_dir;
     double freq, tx_freq, rx_freq, rs, bw, tx_bw, rx_bw, tx_gain, rx_gain, duration, preamble;
     int modcod, rolloff_i, max_iter, web_port;
     bool no_pilots, raw;
@@ -920,6 +1034,8 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         ("ref", po::value<std::string>(&ref)->default_value("internal"), "clock reference: internal | external (10 MHz REF IN) | gpsdo")
         ("input", po::value<std::string>(&input)->default_value(""), "TX payload file ('-' = stdin); none = PRBS")
         ("output", po::value<std::string>(&output)->default_value(""), "RX payload file ('-' = stdout); none = PRBS BER check")
+        ("udp-in", po::value<std::string>(&udp_in)->default_value(""), "TX payload: UDP datagrams received on [addr:]port (addr default 127.0.0.1, 0.0.0.0 = all)")
+        ("udp-out", po::value<std::string>(&udp_out)->default_value(""), "RX payload: send the received UDP datagrams to host:port")
         ("max-iter", po::value<int>(&max_iter)->default_value(25), "LDPC iterations (1..50)")
         ("preamble", po::value<double>(&preamble)->default_value(1.0), "TX: seconds of zero bytes before the file (RX lock time)")
         ("raw", po::bool_switch(&raw), "no file header: TX sends the bytes as they are, RX writes every byte")
@@ -950,8 +1066,14 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         throw std::runtime_error("--rolloff must be 35, 25 or 20");
     if (max_iter < 1 || max_iter > 50)
         throw std::runtime_error("--max-iter must be 1..50");
-    if (web && (!input.empty() || !output.empty()))
-        throw std::runtime_error("--web: send files from the web page instead of --input/--output");
+    if (web && (!input.empty() || !output.empty() || !udp_in.empty() || !udp_out.empty()))
+        throw std::runtime_error("--web: send files from the web page instead of --input/--output/--udp-in/--udp-out");
+    if (!udp_in.empty() && !input.empty())
+        throw std::runtime_error("--udp-in and --input cannot be used together");
+    if (!udp_out.empty() && !output.empty())
+        throw std::runtime_error("--udp-out and --output cannot be used together");
+    if (udp_out.find(':') == std::string::npos && !udp_out.empty())
+        throw std::runtime_error("--udp-out needs host:port");
     const int ro       = rolloff_i == 25 ? 1 : rolloff_i == 20 ? 2 : 0;
     const double alpha = rolloff_of(ro);
     if (output == "-") g_log = stderr;
@@ -975,6 +1097,10 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
     // ---- open the device with the DVB-S2 FPGA image
     std::string dev_args = args;
     if (!dev_args.empty()) dev_args += ",";
+    // largest USB frames (B200 max 16360 bytes): half the host CPU of the 8 kB default
+    // (measured RX 7.68 MS/s: 42 % -> 21 % of a core), unless given in --args
+    if (args.find("recv_frame_size") == std::string::npos) dev_args += "recv_frame_size=16360,";
+    if (args.find("send_frame_size") == std::string::npos) dev_args += "send_frame_size=16360,";
     const double a0      = rolloff_of(ro);
     const double mcr0    = choose_mcr(2.0 * std::max(do_tx ? cfg.tx_bw : 0.0, do_rx ? cfg.rx_bw : 0.0) / (1 + a0));
     dev_args += "fpga=" + fpga + ",enable_user_regs,master_clock_rate=" + std::to_string(mcr0);
@@ -1018,8 +1144,8 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         S         = Session();
         S.do_tx   = do_tx && tx_on;
         S.do_rx   = do_rx && rx_on;
-        S.tx_data = S.do_tx && !in.empty();
-        S.rx_data = S.do_rx && !out.empty();
+        S.tx_data = S.do_tx && (!in.empty() || !udp_in.empty());
+        S.rx_data = S.do_rx && (!out.empty() || !udp_out.empty());
         S.raw     = raw;
         S.in_path = in;
         S.in_name = name;
@@ -1037,10 +1163,34 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         if ((do_rx && act.mcr / act.fs_rx < 7.999) || (do_tx && act.mcr / act.fs_tx < 7.999))
             throw std::runtime_error("less than 8 radio clocks per sample");
 
-        if (S.tx_data) S.fin = (in == "-") ? stdin : fopen(in.c_str(), "rb");
-        if (S.rx_data) S.fout = (out == "-") ? stdout : fopen(out.c_str(), "wb");
-        if ((S.tx_data && !S.fin) || (S.rx_data && !S.fout))
-            throw std::runtime_error("cannot open payload file " + (S.tx_data && !S.fin ? in : out));
+        if (S.tx_data && udp_in.empty()) {
+            S.fin = (in == "-") ? stdin : fopen(in.c_str(), "rb");
+            if (!S.fin) throw std::runtime_error("cannot open payload file " + in);
+        }
+        if (S.rx_data && udp_out.empty()) {
+            S.fout = (out == "-") ? stdout : fopen(out.c_str(), "wb");
+            if (!S.fout) throw std::runtime_error("cannot open payload file " + out);
+        }
+        if (S.tx_data && !udp_in.empty()) {
+            S.uin           = std::unique_ptr<UdpIn>(new UdpIn());
+            const sockaddr_in a = udp_addr(udp_in, "127.0.0.1");
+            S.uin->fd       = socket(AF_INET, SOCK_DGRAM, 0);
+            const int one   = 1, rcvbuf = 4 << 20;
+            timeval tv{0, 100000};
+            setsockopt(S.uin->fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+            setsockopt(S.uin->fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+            setsockopt(S.uin->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            if (S.uin->fd < 0 || bind(S.uin->fd, (const sockaddr*)&a, sizeof(a)) < 0)
+                throw std::runtime_error("cannot bind UDP " + addr_str(a) + ": " + strerror(errno));
+            fprintf(g_log, "TX payload: UDP datagrams received on %s\n", addr_str(a).c_str());
+        }
+        if (S.rx_data && !udp_out.empty()) {
+            S.uout      = std::unique_ptr<UdpOut>(new UdpOut());
+            S.uout->dst = udp_addr(udp_out, "");
+            S.uout->fd  = socket(AF_INET, SOCK_DGRAM, 0);
+            if (S.uout->fd < 0) throw std::runtime_error("cannot open a UDP socket");
+            fprintf(g_log, "RX payload: UDP datagrams sent to %s\n", addr_str(S.uout->dst).c_str());
+        }
 
         // ---- configure the modem
         uint32_t ctrl = CTRL_PLL | CTRL_AGC | CTRL_ES;
@@ -1052,8 +1202,8 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         modem.wr(REG_CTRL, ctrl);
         modem.wr(REG_CLR, 1);
         fprintf(g_log, "%s, %s, roll-off 0.%02d, %s%s\n", MODCOD_NAME[cfg.modcod], cfg.pilots ? "pilots" : "no pilots",
-            rolloff_i, S.do_tx ? (S.tx_data ? "TX payload from file " : "TX PRBS ") : "",
-            S.do_rx ? (S.rx_data ? "RX payload to file" : "RX PRBS check") : "");
+            rolloff_i, S.do_tx ? (S.uin ? "TX payload from UDP " : S.tx_data ? "TX payload from file " : "TX PRBS ") : "",
+            S.do_rx ? (S.uout ? "RX payload to UDP" : S.rx_data ? "RX payload to file" : "RX PRBS check") : "");
 
         // payload rate: 90 % of the frame capacity, in bytes per sample (2 samples / symbol)
         S.bps = 0.9 * double((kbch_of(cfg.modcod) - 80) / 8) / (2.0 * frame_symbols(cfg.modcod, cfg.pilots));
@@ -1067,7 +1217,10 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         S.iq             = std::unique_ptr<InputQueue>(new InputQueue());
         S.sink           = std::unique_ptr<FileSink>(new FileSink());
         std::vector<uint8_t> prefix;
-        if (S.tx_data && !raw) {
+        const size_t dfl_bytes = size_t(kbch_of(cfg.modcod) - 80) / 8;
+        // UDP: queue at most ~0.2 s of air time (and at least one maximum-size datagram)
+        if (S.uin) S.uin->limit = std::max(size_t(0.2 * S.bps * act.fs_tx), UDP_MAX_PAYLOAD + UDP_OVERHEAD);
+        if (S.tx_data && !raw && !S.uin) {
             // preamble (zero bytes while the receiver locks) + header
             prefix.assign(size_t(std::max(0.0, preamble) * S.bps * act.fs_tx), 0);
             uint64_t flen = LEN_UNKNOWN;
@@ -1084,9 +1237,14 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         }
         S.sink->raw = raw;
         S.sink->out = S.fout;
-        if (S.tx_data) S.trd = std::thread(reader_worker, S.fin, S.iq.get(), prefix);
-        if (S.do_rx) S.trx = std::thread(rx_worker, usrp, S.sink.get(), S.rx_data, S.rst.get());
-        if (S.do_tx) S.ttx = std::thread(tx_worker, usrp, S.tx_data ? S.iq.get() : nullptr, S.bps, S.tst.get());
+        if (S.uin)
+            S.trd = std::thread(udp_reader_worker, S.uin.get(), S.iq.get());
+        else if (S.tx_data)
+            S.trd = std::thread(reader_worker, S.fin, S.iq.get(), prefix);
+        if (S.do_rx) S.trx = std::thread(rx_worker, usrp, S.sink.get(), S.uout.get(), S.rx_data, S.rst.get());
+        if (S.do_tx)
+            S.ttx = std::thread(tx_worker, usrp, S.tx_data ? S.iq.get() : nullptr, S.bps, S.uin ? dfl_bytes : 0,
+                S.tst.get());
         S.t0 = std::chrono::steady_clock::now();
     };
 
@@ -1376,8 +1534,8 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         }
         if (std::chrono::duration<double>(now - t_print).count() >= 0.999) {
             t_print = now;
-            if (S.do_tx) print_tx(s, *S.tst, S.tx_data);
-            if (S.do_rx) print_rx(s, S.rs_rx, *S.rst, S.rx_data, S.raw);
+            if (S.do_tx) print_tx(s, *S.tst, S.tx_data, S.uin.get());
+            if (S.do_rx) print_rx(s, S.rs_rx, *S.rst, S.rx_data, S.raw, S.uout.get());
         }
         // restart the BER statistics once, after the receiver has settled
         if (S.do_rx && !S.cleared && ((s[0] >> 14) & 1) && s[10] >= 5) {

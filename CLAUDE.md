@@ -84,6 +84,8 @@ Long jobs (`run_all.sh`, Vivado/ISE builds, BER sweeps) should run in the backgr
 * `patch_uhd_fpga.py` is idempotent (patches from `*.orig`, marker `DVBS2-PATCH`); new make target `B210_DVBS2`.
 * Host ↔ FPGA: user settings regs (device arg `enable_user_regs`, `poke32(4*n)`, `peek64(8*m)` → status words 2m/2m+1, ID word 30 = 0x44564232).
   Payload bytes ride in sc16 samples: TX `I[8]` valid + `I[7:0]` byte; RX `I[9]` frame end, `I[8]` valid, `I[7:0]` byte, `Q` = 16-bit seq.
+* UDP mode (`--udp-in` / `--udp-out`, host only): each datagram framed as in `host/udp_frame.hpp` (sync C5 3A, len, seq, CRC-16, data, CRC-32);
+  TX zero-fills the current BBFRAME when its queue is empty (BBFRAME = DFL/8 bytes, FIFO reset at session start keeps the count aligned).
 * File mode: TX sends `--preamble` seconds of zeros, then header (magic `A5 'DVBS2' 5A C3`, u64 len, ~len), then the file; RX writes only after the header and stops after len bytes.
 * RX decodes MODCOD/pilots from the PLHEADER; only roll-off (and Rs, frequency) must match TX.
 * Built with ISE 14.7 against UHD 4.11.0.0 (routes, timing met: 54.7k LUT / 79 % slices / 88 % BRAM / 86 % DSP) and

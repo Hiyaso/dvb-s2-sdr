@@ -24,6 +24,7 @@ B210 FPGA radio 0                               B210 FPGA radio 0
 | `patch_uhd_fpga.py` | 把 DVB-S2 加進 UHD 原始碼的 B210 FPGA，並新增 `make B210_DVBS2` 目標 |
 | `build_fpga.sh` | 一鍵完成：抓和已安裝版本相同的 UHD 原始碼 → patch → 用 ISE 編譯 |
 | `host/dvbs2_b210.cpp` | PC 端程式（UHD C++），用 `host/build.sh` 編譯；`--web` 時內建網頁伺服器 |
+| `host/udp_frame.hpp` | UDP 封包在 DVB-S2 位元組串流裡的成框／還原（`--udp-in`／`--udp-out`） |
 | `host/web/index.html` | 網頁介面（解碼速率、SNR／RSSI／CFO、解碼速率圖、TX／RX 設定、頻譜、傳檔、基頻狀態） |
 | `sim/reg_b210.sh`、`sim/tb_b210.v` | 模擬：兩台「B210」中間接通道模型，PRBS 和檔案傳輸兩種模式都測 |
 
@@ -109,6 +110,25 @@ RX LOCK 8PSK 2/3 pil FLL3 CFO   +2315.4 Hz | frames 812 miss 0 | LDPC it  6 drop
 
 **只有一台 B210 時自收自發：** 用 `--mode trx`（TX 在 TX/RX A，RX 在 RX2 A），或用下面的網頁模式。
 
+**UDP 封包：**
+```bash
+# PC2：收到的 UDP 封包轉送到 192.168.1.10:6000
+./dvbs2_b210 --mode rx --fpga usrp_b210_dvbs2_fpga.bin --udp-out 192.168.1.10:6000
+# PC1：收 127.0.0.1:5000 的 UDP 封包，經 DVB-S2 送出（其他電腦送來時用 --udp-in 0.0.0.0:5000）
+./dvbs2_b210 --mode tx --fpga usrp_b210_dvbs2_fpga.bin --udp-in 5000
+```
+* 每個 UDP 封包單獨成框，RX 還原後**原封包**（同樣邊界、同樣長度，0–65535 B）送出：
+  `C5 3A | 長度 u16 | 封包序號 u16 | CRC-16（長度＋序號）| 資料 | CRC-32（資料）`，大端序，每包多 12 位元組（`host/udp_frame.hpp`）。
+* TX 沒有資料時，把正在填的 BBFRAME 補 0x00 補滿後送出，所以小封包不會卡在半滿的幀裡；
+  之後沒資料就送 dummy 幀。延遲主要來自 UHD 的 TX USB 緩衝：實測（2 MHz、8PSK 2/3）中位數約 51 ms；
+  加 `--args num_send_frames=4,send_frame_size=4096` 可降到約 23 ms，但 USB 欠載的機會變大（狀態列 `host U`）。
+* RX 以同步字找封包，CRC 錯誤（或跨過序號缺口）的封包丟掉，再從下一個位元組重找，不影響後面的封包。
+  狀態列：TX `udp in N pkt, dropped, fill`（fill = 補幀的 0x00 位元組），RX `udp out N pkt, lost, bad CRC`。
+* UDP 語意：沒有重傳、不保證送達。RX 鎖定前送的封包會遺失；輸入速率超過 MODCOD 容量（以 90% 送）時，
+  TX 佇列只留約 0.2 秒的量，多的封包直接丟掉（`dropped`），不會越積越久。
+* 只支援 IPv4；`--udp-in` 預設只聽 127.0.0.1（沒有驗證，任何能送到這個埠的人都能經 RF 送資料）。
+  `--udp-in` 不能和 `--input` 一起用，`--udp-out` 不能和 `--output` 一起用，也不能和 `--web` 一起用。
+
 ### 主要參數
 
 | 參數 | 說明 |
@@ -122,7 +142,7 @@ RX LOCK 8PSK 2/3 pil FLL3 CFO   +2315.4 Hz | frames 812 miss 0 | LDPC it  6 drop
 | `--ref internal/external/gpsdo` | 時脈參考。符號率很低時，兩台的 REF IN 接同一個 10 MHz 並加 `--ref external` |
 | `--preamble 1.0` | 傳檔前的填充秒數（RX 鎖定時間） |
 | `--tx-gain` / `--rx-gain` | AD9361 的增益；RX AGC 在 FPGA 裡面做 |
-| `--args serial=...` | 接了多台 B210 時用來指定 |
+| `--args serial=...` | 接了多台 B210 時用來指定。程式預設加上 `recv_frame_size=16360,send_frame_size=16360`（USB 封包最大，PC CPU 用量約減半），`--args` 裡自己給就以你的為準 |
 
 酬載容量（以 1 Msym/s、有導頻為例）：QPSK 1/2 約 104 kB/s，8PSK 2/3 約 236 kB/s，8PSK 8/9 約 316 kB/s，
 大致和符號率成正比。程式以容量的 90% 送資料；資料不夠時，TX 會自動插入 dummy 幀。
@@ -233,3 +253,7 @@ B210 專用的狀態字：
   - 網頁修改增益、頻寬（2 → 1 MHz）、頻率後都能重新鎖定；RX 頻率偏 5 kHz 時 CFO 顯示 −5000.0 Hz
   - 300 kB 隨機檔案經空中回環：收到的檔案和原檔 SHA-256 相同
   - 頻譜：訊號帶內約 −46 dBFS，帶外雜訊底約 −91 dBFS
+* **實機 UDP（一台 B210、`--mode trx`、天線、1 GHz、2 MHz、8PSK 2/3、TX/RX 增益 40 dB）**：
+  - 200 包/秒、0–9000 B 隨機長度（約 215 kB/s）：3000 包全收到、內容正確，延遲中位數 51 ms、p99 109 ms
+  - `num_send_frames=4,send_frame_size=4096`：50 包/秒延遲中位數 23 ms；450 包/秒（超過容量）丟 232／4000 包、
+    收到的全部正確，延遲維持在約 0.22 s（TX 佇列上限）

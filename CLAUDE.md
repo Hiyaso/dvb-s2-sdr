@@ -2,13 +2,15 @@
 
 DVB-S2 baseband modem (ETSI EN 302 307-1), TX + RX, **short FECFRAME (16200) only**,
 QPSK 1/4–8/9 and 8PSK 3/5–8/9, pilots on/off, roll-off 0.35/0.25/0.20.
-One Verilog-2001 code base at the repo root (modem RTL, Python models, regressions, environment), two board projects:
+One Verilog-2001 code base at the repo root (modem RTL, Python models, regressions, environment), three board projects:
 
 * **`z7020/`** Zynq-7020 (PYNQ-Z2 / Zybo Z7-20): PL loopback TX → channel emulator → RX, PS controls it over AXI-Lite. Vivado.
 * **`b210/`** USRP B210 (Spartan-6 XC6SLX150): modem inside UHD's `radio_legacy`, between the host stream and DUC/DDC, PC program with web UI. ISE 14.7.
+* **`adrv9364/`** ADI ADRV9364-Z7020 SOM on a custom carrier: modem between `axi_ad9361` and ADI's DMA path (ADI HDL hdl_2026_r1 + Vivado),
+  SD-card image (Kuiper 2026.1.0) with the `dvbs2_adrv` service on the ARM: web UI + UDP data, static IP 192.168.30.1.
 
 The owner (Jacky) works in satellite / RF. Answer in Traditional Chinese (English if he writes in English), concise, result first.
-README.md, z7020/README.md and b210/README.md are user-facing docs in Traditional Chinese; keep them in sync when behaviour changes.
+README.md, z7020/README.md, b210/README.md and adrv9364/README.md are user-facing docs in Traditional Chinese; keep them in sync when behaviour changes.
 
 ## Layout
 
@@ -26,9 +28,12 @@ README.md, z7020/README.md and b210/README.md are user-facing docs in Traditiona
 | `z7020/sim/tb_top.v`, `z7020/doc/register_map.md` | AXI-Lite top testbench, AXI-Lite register map |
 | `b210/rtl/` | `dvbs2_b210` wrapper (user-settings regs, payload bytes inside IQ samples) + FIFO |
 | `b210/sim/` | `tb_b210.v` + `reg_b210.sh` (outputs in `b210/sim/out/`) |
+| `adrv9364/rtl/` | `dvbs2_adrv` wrapper (AXI-Lite 0x44A00000, 16 kB payload FIFOs, CDC FIFOs to l_clk, spectrum snapshot) |
+| `adrv9364/hdl/` | ADI project files copied into `<adi-hdl>/projects/adrv9364z7020/dvbs2/` (block design insertion, SOM-only top, CDC xdc) |
+| `adrv9364/` | `build_fpga.sh` (ADI HDL + Vivado → BOOT.BIN), `make_sd_image.sh` (Kuiper image + service, no root: mtools/debugfs), `lib.sh`, `sw/` (ARM program, web UI, mock test), `rootfs/`, `sim/` |
 | `b210/` | `patch_uhd_fpga.py` (copies `rtl/{common,gen,tx,rx}` + `b210/rtl` into UHD), `build_fpga.sh` (ISE), `host/dvbs2_b210.cpp` (UHD C++ PC program) + `host/web/index.html` |
 
-`sim/vl.sh <tb>` finds `<tb>.v` in `sim/tb`, `b210/sim` or `z7020/sim` and, for a board testbench, also compiles that project's `rtl/`.
+`sim/vl.sh <tb>` finds `<tb>.v` in `sim/tb`, `b210/sim`, `z7020/sim` or `adrv9364/sim` and, for a board testbench, also compiles that project's `rtl/`.
 
 ## Commands
 
@@ -43,6 +48,8 @@ sim/reg_fec.sh         # demap + LDPC + BCH chain
 sim/reg_rxfe.sh        # AGC + timing recovery
 sim/reg_sys.sh [quick|full]   # full loopback; full = 10 scenarios (CFO up to 2 % Rs, ±50 ppm, no pilots, roll-offs)
 b210/sim/reg_b210.sh   # two dvbs2_b210 boards + channel (defines DVBS2_FIR_FOLD, SPARTAN6)
+adrv9364/sim/reg_adrv.sh   # two dvbs2_adrv SOMs + channel, payload over AXI-Lite, expect 3 PASS
+adrv9364/sw/test_mock.sh   # dvbs2_adrv on the PC with a software FPGA model: UDP + web API, expect PASS
 sim/run_all.sh [full]  # all of the above, ~40 min (+1 h for full)
 sim/vl.sh <tb> <outdir> [-Gparam=val ...]   # build one testbench
 
@@ -72,10 +79,24 @@ Long jobs (`run_all.sh`, Vivado/ISE builds, BER sweeps) should run in the backgr
   `` `ifdef SPARTAN6 `` = XST RAM templates. The Z7020 build uses neither. Both variants must stay bit-exact
   (reg_tx with and without FIR_FOLD).
 * Timing budget: **≥ 8 clocks per sample** (DIV ≥ 8 on Z7020, master clock ≥ 8 × sample rate on B210);
-  the RX timing loop pipeline needs ≥ 6. LDPC P=45 keeps up with 25 iterations at 16 clocks/symbol.
+  the RX timing loop pipeline needs ≥ 7 (input pacer MIN_GAP = 7). LDPC P=45 keeps up with 25 iterations at 16 clocks/symbol.
 * `rtl/gen/*.v` comes from `python/gen_rtl_roms.py`; edit the generator, not the output.
 * Before saying a change works, run at least the regression that covers it (reg_tx / reg_ldpc / reg_fec / reg_sys quick / reg_b210)
   and report pass/fail counts. Testbenches print `PASS`/`FAIL`.
+
+## ADRV9364 specifics
+
+* Base: ADI HDL `hdl_2026_r1` at 4840c81f2 (the commit of the Kuiper 2026.1.0 boot files), Vivado 2025.1 (2025.2 works with
+  `ADI_IGNORE_VERSION_CHECK=1`, set by `build_fpga.sh`). BOOT.BIN = Kuiper's `fsbl.elf` + our bit + Kuiper's u-boot
+  (bootgen reproduces ADI's BOOT.BIN byte for byte); Kuiper's `zynq-adrv9364-z7020-bob/lvds/devicetree.dtb` is used unchanged.
+* The devicetree reserves 0x43C00000 (mwipcore), so the modem is at 0x44A00000; the program uses `/dev/mem`
+  (`CONFIG_STRICT_DEVMEM` off) and sets the axi_ad9361 DAC data source to DMA (0x79024418/58 = 2).
+* TX and RX share one sample rate (AD9364 BBPLL); Fs <= 12.5 MS/s (100 MHz / 8), >= 0.52 MS/s (libad9361 FIR, loaded with dlopen).
+* `make_sd_image.sh` edits the image without root (mtools for FAT, debugfs for ext4). Kuiper's rootfs ships with an
+  unreplayed journal: `e2fsck -fy` before debugfs is required (otherwise the boot-time replay undoes edits). Image defaults transmit at boot.
+* Built with Vivado 2025.2: 95 % slices, 100 MHz met with WNS ~0 (after pipelining rx_timing mu / rx_agc average,
+  multicycle on the config regs, axi_ad9361 DC filter + IQ correction off, Performance_ExplorePostRoutePhysOpt).
+  Any RTL change can break timing; check `timing_impl.log`. Not yet run on hardware.
 
 ## B210 specifics
 

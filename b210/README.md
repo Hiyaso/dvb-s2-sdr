@@ -59,6 +59,7 @@ ISE_SETTINGS=/opt/Xilinx/14.7/ISE_DS/settings64.sh ./build_fpga.sh
   B 通道不能用。原廠 image 的雙通道功能不受影響（換回原廠 image 即可）。
 * 整個 image：54.7k LUT（59%）、occupied slice 79%、238 個 RAMB16（88%）、156 個 DSP48A1（86%）；
   ISE 14.7 完整編譯約 1 小時（XST 佔大部分，PAR 約 8 分鐘），時序全部通過。
+  （這是 RX 定時恢復／AGC 多加一級管線之前的數字；新的 RTL 多約 100 個暫存器，`reg_b210` 通過，ISE 還沒重編。）
 
 也可以手動做：`python3 patch_uhd_fpga.py ~/uhd` → `cd ~/uhd/fpga/usrp3/top/b200 && make B210_DVBS2`。
 patch 可以重複執行，原始檔會保留成 `*.orig`。

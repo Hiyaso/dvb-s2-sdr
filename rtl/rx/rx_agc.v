@@ -39,18 +39,24 @@ wire signed [33:0] step = ($signed(diff) <<< 16) >>> mu;
 wire signed [33:0] gnext = gacc + step;
 localparam signed [33:0] GMIN = 34'sd1 <<< 16;            // gain >= 1/1024
 localparam signed [33:0] GMAX = 34'sd65535 <<< 16;
-reg upd;
+// gain update one clock after the sample (from the average up to the previous sample),
+// average update one clock later from the registered |y| (samples are >= 2 clocks apart)
+reg upd, upd2;
+reg [16:0] mag_r;
 always @(posedge clk) begin
     if (rst) begin
         gacc <= 34'sd1024 <<< 16; avg_acc <= 26'd0; out_valid <= 1'b0; out_i <= 0; out_q <= 0; upd <= 1'b0;
+        upd2 <= 1'b0; mag_r <= 17'd0;
     end else begin
         out_valid <= in_valid;
         if (in_valid) begin out_i <= sat16(si); out_q <= sat16(sq); end
-        upd <= in_valid;
+        upd  <= in_valid;
+        upd2 <= upd;
         if (upd) begin
-            avg_acc <= avg_acc + mag - {10'd0, avg};
+            mag_r <= mag;
             if (enable) gacc <= (gnext < GMIN) ? GMIN : (gnext > GMAX) ? GMAX : gnext;
         end
+        if (upd2) avg_acc <= avg_acc + mag_r - {10'd0, avg};
     end
 end
 endmodule

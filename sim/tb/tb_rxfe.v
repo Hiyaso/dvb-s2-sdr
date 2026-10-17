@@ -26,7 +26,7 @@ ch_emu u_ch (.clk(clk), .rst(rst), .bypass(1'b0), .ppm_step(PPM_STEP), .delay_fr
     .cfo_step(CFO), .phase0(16'd5000), .noise_amp(NOISE[15:0]), .sig_gain(16'd16384),
     .in_valid(tx_v), .in_i(tx_i), .in_q(tx_q), .out_valid(ch_v), .out_i(ch_i), .out_q(ch_q));
 wire pc_v, pc_ovf; wire signed [15:0] pc_i, pc_q;
-sample_pacer #(.MIN_GAP(6)) u_pc (.clk(clk), .rst(rst), .in_valid(ch_v), .in_i(ch_i), .in_q(ch_q), .out_valid(pc_v), .out_i(pc_i), .out_q(pc_q), .overflow(pc_ovf));
+sample_pacer #(.MIN_GAP(7)) u_pc (.clk(clk), .rst(rst), .in_valid(ch_v), .in_i(ch_i), .in_q(ch_q), .out_valid(pc_v), .out_i(pc_i), .out_q(pc_q), .overflow(pc_ovf));
 wire ag_v; wire signed [15:0] ag_i, ag_q; wire [15:0] gain;
 rx_agc u_agc (.clk(clk), .rst(rst), .enable(1'b1), .target(16'd6000), .mu(4'd12),
     .in_valid(pc_v), .in_i(pc_i), .in_q(pc_q), .out_valid(ag_v), .out_i(ag_i), .out_q(ag_q), .gain(gain));

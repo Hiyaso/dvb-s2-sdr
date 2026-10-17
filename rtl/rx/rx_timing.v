@@ -71,12 +71,13 @@ wire signed [26:0] w_s = 27'sd8388608 + v_n;           // 0.5 + v
 wire [24:0] w_n = (w_s < 27'sd6291456) ? 25'd6291456 : (w_s > 27'sd10485760) ? 25'd10485760 : w_s[24:0];
 reg  [24:0] w_use;                                      // W for this sample's NCO step (s4)
 wire signed [25:0] eta_d = $signed({1'b0, eta}) - $signed({1'b0, w_use});
-// mu = eta / W ~ 2*eta*(1 - 2*(W - 0.5))   (s5, registered DSP operands)
+// mu = eta / W ~ 2*eta*(1 - 2*(W - 0.5)):  operands registered at s5 (mu_upd),
+// product registered one clock later (mu_upd2), mu written the clock after that
+// (still before the next sample, >= 8 clocks apart, uses it in its cycle 1)
 reg  [24:0] mu_eta;
-reg  signed [26:0] mu_dw;
-reg         mu_upd;
-wire signed [27:0] fac  = 28'sd16777216 - (mu_dw <<< 1);                // (1 - 2dw), Q24
-wire signed [55:0] mu_p = $signed({2'b00, mu_eta, 1'b0}) * fac;        // 2eta*(1-2dw), Q48
+reg  signed [27:0] mu_fac;                                              // (1 - 2dw), Q24
+reg         mu_upd, mu_upd2;
+reg  signed [55:0] mu_p;                                                // 2eta*(1-2dw), Q48
 wire        [16:0] mu_new = (mu_p < 0) ? 17'd0 : mu_p[48:32];          // Q16
 reg         s4, s5;
 
@@ -84,8 +85,8 @@ always @(posedge clk) begin
     if (rst) begin
         x0i <= 0; x0q <= 0; x4i <= 0; x4q <= 0; x1i <= 0; x2i <= 0; x3i <= 0; x1q <= 0; x2q <= 0; x3q <= 0;
         mu <= 16'd0; eta <= 25'd0; w <= 25'd8388608; strobe <= 1'b0; integ <= 32'sd0;
-        s0 <= 0; s1 <= 0; s2 <= 0; s3 <= 0; s4 <= 0; s5 <= 0; mu_upd <= 1'b0; w_use <= 25'd8388608;
-        mu_eta <= 25'd0; mu_dw <= 27'sd0; out_valid <= 1'b0; out_i <= 0; out_q <= 0;
+        s0 <= 0; s1 <= 0; s2 <= 0; s3 <= 0; s4 <= 0; s5 <= 0; mu_upd <= 1'b0; mu_upd2 <= 1'b0; w_use <= 25'd8388608;
+        mu_eta <= 25'd0; mu_fac <= 28'sd16777216; mu_p <= 56'sd0; out_valid <= 1'b0; out_i <= 0; out_q <= 0;
         pyi <= 0; pyq <= 0; psi <= 0; psq <= 0; e <= 0; was_strobe <= 1'b0;
         v2i <= 0; v2q <= 0; v1i <= 0; v1q <= 0; v0i <= 0; v0q <= 0; ti <= 0; tq <= 0; yi <= 0; yq <= 0;
         w2i <= 0; w2q <= 0; w1i <= 0; w1q <= 0; w0i <= 0; w0q <= 0; tmi <= 0; tmq <= 0; ymi <= 0; ymq <= 0;
@@ -149,15 +150,17 @@ always @(posedge clk) begin
                 eta    <= eta_d + 26'sd16777216;
                 strobe <= 1'b1;
                 mu_eta <= eta;
-                mu_dw  <= $signed({2'b00, w_use}) - 27'sd8388608;
+                mu_fac <= 28'sd16777216 - (($signed({3'b000, w_use}) - 28'sd8388608) <<< 1);
                 mu_upd <= 1'b1;
             end else begin
                 eta    <= eta_d[24:0];
                 strobe <= 1'b0;
             end
         end
-        // ---- cycle 6: fractional interval for the next interpolants
-        if (mu_upd) mu <= (mu_new > 17'd65535) ? 16'hFFFF : mu_new[15:0];
+        // ---- cycles 6, 7: fractional interval for the next interpolants
+        mu_upd2 <= mu_upd;
+        if (mu_upd) mu_p <= $signed({2'b00, mu_eta, 1'b0}) * mu_fac;
+        if (mu_upd2) mu <= (mu_new > 17'd65535) ? 16'hFFFF : mu_new[15:0];
     end
 end
 endmodule

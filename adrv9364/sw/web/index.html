@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DVB-S2 ADRV9364</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --fg: #1c2330; --muted: #677285; --line: #dde1e8;
+  --accent: #1f6feb; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700;
+  --plot-bg: #0f1722; --plot-grid: #273244; --plot-line: #58a6ff; --plot-fill: rgba(88,166,255,.18);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0d1117; --card: #161b22; --fg: #e6edf3; --muted: #8b949e; --line: #30363d;
+          --accent: #4493f8; --ok: #3fb950; --bad: #f85149; --warn: #d29922; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line);
+         background: var(--card); position: sticky; top: 0; z-index: 2; }
+header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+header .sub { color: var(--muted); font-size: 13px; }
+header .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); white-space: nowrap; }
+.pill.ok { color: var(--ok); border-color: var(--ok); }
+.pill.bad { color: var(--bad); border-color: var(--bad); }
+.pill.warn { color: var(--warn); border-color: var(--warn); }
+main { padding: 16px 20px 32px; display: grid; gap: 16px; grid-template-columns: 1fr 1fr; max-width: 1280px; margin: 0 auto; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.card h2 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+.wide { grid-column: 1 / -1; }
+.form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: end; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+input[type=number], input[type=text], select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+                     background: var(--bg); color: var(--fg); font: inherit; font-variant-numeric: tabular-nums; }
+input[type=number]:focus, input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.chk { display: flex; gap: 6px; align-items: center; padding: 6px 0; }
+.mode { display: inline-flex; border: 1px solid var(--accent); border-radius: 6px; overflow: hidden; }
+.mode button { border: 0; border-radius: 0; background: transparent; color: var(--accent); }
+.mode button.sel { background: var(--accent); color: #fff; }
+button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent);
+         color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 12px; }
+dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 14px; margin: 12px 0 0; }
+dl div { min-width: 0; }
+dt { font-size: 12px; color: var(--muted); }
+dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 550; overflow-wrap: anywhere; }
+canvas { width: 100%; height: 300px; display: block; border-radius: 8px; background: var(--plot-bg); }
+.filebox { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+progress { width: 100%; height: 10px; }
+.onoff { margin-left: auto; min-width: 74px; padding: 4px 12px; border-radius: 999px; font-size: 13px;
+         background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.onoff::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                 background: var(--muted); margin-right: 6px; vertical-align: 1px; }
+.onoff.on { color: #fff; background: var(--ok); border-color: var(--ok); }
+.onoff.on::before { background: #fff; }
+.card.off dl { opacity: .45; }
+.chart-wrap { position: relative; }
+#rate { height: 220px; cursor: crosshair; }
+#rate:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tip { position: absolute; pointer-events: none; background: var(--card); color: var(--fg); border: 1px solid var(--line);
+       border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.25); white-space: nowrap;
+       display: none; z-index: 1; }
+.tip .v { font-weight: 650; font-size: 13px; font-variant-numeric: tabular-nums; }
+.tip .k { display: inline-block; width: 12px; height: 2px; background: #58a6ff; vertical-align: middle; margin-right: 6px; }
+.tip .m { color: var(--muted); }
+details.tbl { margin-top: 8px; }
+details.tbl summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+details.tbl table { border-collapse: collapse; margin-top: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+details.tbl th, details.tbl td { padding: 2px 12px 2px 0; text-align: right; border-bottom: 1px solid var(--line); }
+details.tbl th { color: var(--muted); font-weight: 600; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tile.span2 { grid-column: span 2; }
+.tile.span2 .v { font-size: clamp(32px, 4.2vw, 48px); }
+.tile { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px 12px; min-width: 0; }
+.tile .k { font-size: 13px; color: var(--muted); font-weight: 600; }
+.tile .v { font-size: clamp(28px, 3.2vw, 38px); font-weight: 650; line-height: 1.2; white-space: nowrap;
+           font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.tile .u { font-size: .45em; font-weight: 600; color: var(--muted); margin-left: 5px; }
+.tile .s { font-size: 12px; color: var(--muted); min-height: 1.45em; }
+.tile.ok .v { color: var(--ok); }
+.tile.bad .v, .tile.bad .s { color: var(--bad); }
+.tile.dim .v { color: var(--muted); }
+.bar { height: 8px; border-radius: 4px; background: var(--line); margin: 4px 0 6px; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+.tile.dim .bar i { background: var(--muted); }
+.bb h2 { font-size: 13px; color: var(--muted); }
+.bbcols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; }
+.bbcols h3 { font-size: 12px; margin: 0; color: var(--muted); font-weight: 650; }
+.bb dl { grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 4px 12px; margin-top: 6px; }
+.bb dt { font-size: 11px; }
+.bb dd { font-size: 12.5px; font-weight: 500; }
+.bbcols .off dl { opacity: .45; }
+.result.ok { color: var(--ok); font-weight: 650; }
+.result.bad { color: var(--bad); font-weight: 650; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } .form { grid-template-columns: 1fr 1fr; }
+                            .bbcols { grid-template-columns: 1fr; } .tiles { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>DVB-S2 Modem</h1>
+  <span class="sub" id="sub">ADRV9364-Z7020</span>
+  <div class="right"><span class="pill" id="conn">Connecting…</span><span class="pill" id="lockpill">RX —</span></div>
+</header>
+<main>
+  <section class="card wide" id="rf_card" aria-live="off">
+    <h2>RX Decode &amp; RF Signal <span class="hint" id="rf_info"></span></h2>
+    <div class="tiles" id="rf_tiles"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>RX Decode Rate (% of MODCOD capacity, every 0.5 s, last 2 min) <span class="hint" id="rate_info"></span></h2>
+    <div class="chart-wrap">
+      <canvas id="rate" tabindex="0" role="img" aria-label="RX decode-rate history in percent of the MODCOD capacity; use the left/right arrow keys to step through points"></canvas>
+      <div class="tip" id="rate_tip" role="status"></div>
+    </div>
+    <details class="tbl" id="rate_tbl"><summary>Table (last 20 points)</summary>
+      <table><thead><tr><th>Time</th><th>Decode rate</th><th>Bit rate</th><th>Frames/s</th></tr></thead><tbody id="rate_rows"></tbody></table>
+    </details>
+  </section>
+
+  <section class="card off" id="tx_card">
+    <h2>TX Transmit <button class="onoff" id="tx_onoff" onclick="toggle('tx')" aria-pressed="false">Off</button></h2>
+    <div class="form">
+      <div><label for="tx_freq">Frequency (MHz)</label><input id="tx_freq" type="number" step="0.001"></div>
+      <div><label for="tx_bw">Bandwidth (MHz)</label><input id="tx_bw" type="number" step="0.001" min="0.4" max="8.4"></div>
+      <div><label for="tx_gain">Gain (dB)</label><input id="tx_gain" type="number" step="0.5" min="0" max="89.75"></div>
+    </div>
+    <div class="actions"><button onclick="apply('tx')">Apply TX</button>
+      <span class="hint" id="tx_hint"></span></div>
+    <dl id="tx_rf"></dl>
+  </section>
+
+  <section class="card off" id="rx_card">
+    <h2>RX Receive <button class="onoff" id="rx_onoff" onclick="toggle('rx')" aria-pressed="false">Off</button></h2>
+    <div class="form">
+      <div><label for="rx_freq">Frequency (MHz)</label><input id="rx_freq" type="number" step="0.001"></div>
+      <div><label for="rx_bw">Bandwidth (MHz)</label><input id="rx_bw" type="number" step="0.001" min="0.4" max="8.4"></div>
+      <div><label for="rx_gain">Gain (dB)</label><input id="rx_gain" type="number" step="0.5" min="0" max="73"></div>
+    </div>
+    <div class="actions"><button onclick="apply('rx')">Apply RX</button>
+      <span class="hint" id="rx_hint"></span></div>
+    <dl id="rx_rf"></dl>
+  </section>
+
+  <section class="card" id="modem_card">
+    <h2>Modem</h2>
+    <div class="form">
+      <div><label for="modcod">MODCOD (TX)</label><select id="modcod">
+        <option value="1">QPSK 1/4</option><option value="2">QPSK 1/3</option><option value="3">QPSK 2/5</option>
+        <option value="4">QPSK 1/2</option><option value="5">QPSK 3/5</option><option value="6">QPSK 2/3</option>
+        <option value="7">QPSK 3/4</option><option value="8">QPSK 4/5</option><option value="9">QPSK 5/6</option>
+        <option value="10">QPSK 8/9</option><option value="12">8PSK 3/5</option><option value="13">8PSK 2/3</option>
+        <option value="14">8PSK 3/4</option><option value="15">8PSK 5/6</option><option value="16">8PSK 8/9</option></select></div>
+      <div><label for="rolloff">Roll-off (TX and RX)</label><select id="rolloff">
+        <option value="35">0.35</option><option value="25">0.25</option><option value="20">0.20</option></select></div>
+      <div><label for="max_iter">LDPC iterations</label><input id="max_iter" type="number" min="1" max="50" step="1"></div>
+      <div class="chk"><input type="checkbox" id="pilots"><label for="pilots" style="margin:0">Pilots (TX)</label></div>
+    </div>
+    <div class="actions"><button onclick="applyModem()">Apply modem</button>
+      <span class="hint" id="modem_hint"></span></div>
+    <p class="hint">The receiver detects MODCOD and pilots from the PLHEADER; only the roll-off and the bandwidth must match the transmitter. Changing them restarts TX and RX.</p>
+  </section>
+
+  <section class="card" id="udp_card">
+    <h2>Data Link (UDP)</h2>
+    <div class="actions" style="margin-top:0"><span class="mode"><button id="m_prbs" onclick="post('/api/prbs')">PRBS test</button><button id="m_udp" onclick="post('/api/udp')">UDP data</button></span>
+      <span class="hint" id="mode_hint"></span></div>
+    <div class="form" style="grid-template-columns: 1fr 1fr; margin-top:10px">
+      <div><label for="udp_in">TX: receive datagrams on [addr:]port</label><input id="udp_in" type="text" placeholder="0.0.0.0:5000"></div>
+      <div><label for="udp_out">RX: send datagrams to host:port</label><input id="udp_out" type="text" placeholder="192.168.30.255:5001"></div>
+    </div>
+    <div class="actions"><button onclick="applyUdp()">Apply UDP</button>
+      <button class="ghost" onclick="saveCfg()">Save settings (used at boot)</button>
+      <span class="hint" id="udp_hint"></span></div>
+    <dl id="udp_stat"></dl>
+  </section>
+
+  <section class="card wide">
+    <h2>RX Spectrum <span class="hint" id="spec_info"></span></h2>
+    <canvas id="spec"></canvas>
+  </section>
+
+  <section class="card wide">
+    <h2>File Loopback Test</h2>
+    <div class="filebox">
+      <input type="file" id="file">
+      <button id="send" onclick="sendFile()">Send file</button>
+      <span class="hint" id="up_hint"></span>
+      <button class="ghost" onclick="post('/api/prbs')">Back to PRBS test</button>
+      <button class="ghost" onclick="post('/api/udp')">Back to UDP data</button>
+      <a id="dl" class="hint" href="/api/received" style="display:none">Download received file</a>
+    </div>
+    <dl id="file_stat"></dl>
+    <div style="margin-top:10px"><progress id="prog" max="1" value="0"></progress></div>
+    <p class="hint">File loopback needs TX and RX of this SOM connected (cable + attenuator). Bandwidth = occupied bandwidth Rs·(1+roll-off), 0.4 … 8.4 MHz; TX and RX share one sample rate (2 × Rs), so the bandwidth applies to both. Changing it restarts the streams (a file in progress is resent); frequency and gain take effect immediately.</p>
+  </section>
+
+  <section class="card wide bb">
+    <h2>Baseband Modem Status</h2>
+    <div class="bbcols">
+      <div id="tx_bbcol" class="off"><h3>TX</h3><dl id="tx_bb"></dl></div>
+      <div id="rx_bbcol" class="off"><h3>RX</h3><dl id="rx_bb"></dl></div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let cfgLoaded = false, last = null;
+
+function fmt(v, d = 0) { return (v === undefined || v === null || isNaN(v)) ? '—' : Number(v).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d}); }
+function mhz(v, d = 3) { return fmt(v / 1e6, d) + ' MHz'; }
+// bit/s with automatic unit; bytes: also show kB/s (file transfers)
+function bps(v, bytes) {
+  if (v === undefined || v === null || isNaN(v)) return '—';
+  const t = v >= 1e6 ? fmt(v / 1e6, 3) + ' Mbit/s' : v >= 1e3 ? fmt(v / 1e3, 1) + ' kbit/s' : fmt(v) + ' bit/s';
+  return bytes ? `${t} (${fmt(v / 8e3, 1)} kB/s)` : t;
+}
+// a 0.5 s window counts whole frames, so a measurement can land ~1 % above the MODCOD capacity:
+// show decoded rates clamped to [0, capacity] and percentages to [0, 100 %]
+function capRate(rate, cap) { return cap > 0 ? Math.min(Math.max(rate || 0, 0), cap) : Math.max(rate || 0, 0); }
+function capPct(rate, cap) { return cap > 0 ? 100 * capRate(rate, cap) / cap : 0; }
+function usage(rate, cap) { return cap > 0 ? `${bps(cap)} · ${fmt(capPct(rate, cap), 0)} % used` : '—'; }
+function dur(sec) {
+  if (!isFinite(sec) || sec < 0) return '—';
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = sec % 60;
+  return (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + x + ' s';
+}
+function stat(el, rows) {
+  $(el).innerHTML = rows.map(([k, v, cls]) => `<div><dt>${k}</dt><dd class="${cls || ''}">${v}</dd></div>`).join('');
+}
+async function post(url, body) {
+  try {
+    const r = await fetch(url, {method: 'POST', body});
+    return r.ok;
+  } catch (e) { return false; }
+}
+async function apply(side) {
+  const p = new URLSearchParams();
+  p.set(side + '_freq', $(side + '_freq').value * 1e6);
+  p.set(side + '_bw', $(side + '_bw').value * 1e6);
+  $(side === 'tx' ? 'rx_bw' : 'tx_bw').value = $(side + '_bw').value;      // one sample rate for TX and RX
+  p.set(side + '_gain', $(side + '_gain').value);
+  $(side + '_hint').textContent = (await post('/api/config', p)) ? 'Sent' : 'Failed';
+  setTimeout(() => $(side + '_hint').textContent = '', 2500);
+}
+async function applyModem() {
+  const p = new URLSearchParams();
+  p.set('modcod', $('modcod').value); p.set('rolloff', $('rolloff').value);
+  p.set('pilots', $('pilots').checked ? 1 : 0); p.set('max_iter', $('max_iter').value);
+  $('modem_hint').textContent = (await post('/api/config', p)) ? 'Sent (TX/RX restart)' : 'Failed';
+  setTimeout(() => $('modem_hint').textContent = '', 3000);
+}
+async function applyUdp() {
+  const p = new URLSearchParams();
+  p.set('udp_in', $('udp_in').value.trim()); p.set('udp_out', $('udp_out').value.trim());
+  $('udp_hint').textContent = (await post('/api/config', p)) ? 'Sent' : 'Failed (empty?)';
+  setTimeout(() => $('udp_hint').textContent = '', 3000);
+}
+async function saveCfg() {
+  $('udp_hint').textContent = (await post('/api/save')) ? 'Saving…' : 'Failed';
+  setTimeout(() => $('udp_hint').textContent = last && last.config.saved ? last.config.saved : '', 1500);
+}
+// TX / RX on-off (off when the program starts); the button follows the state reported by the program
+const busy = {tx: 0, rx: 0};
+async function toggle(side) {
+  if (!last || busy[side]) return;
+  const want = !last[side].on;
+  busy[side] = performance.now();
+  busy[side + '_want'] = want;
+  $(side + '_onoff').disabled = true;
+  $(side + '_onoff').textContent = want ? 'Turning on…' : 'Turning off…';
+  const p = new URLSearchParams();
+  p.set(side + '_on', want ? 1 : 0);
+  if (!(await post('/api/config', p))) { busy[side] = 0; $(side + '_hint').textContent = 'Failed'; }
+}
+function showOnOff(side, on) {
+  const b = $(side + '_onoff');
+  if (busy[side]) {                                     // wait until the program reports the new state
+    if (on !== busy[side + '_want'] && performance.now() - busy[side] < 8000) return;
+    busy[side] = 0;
+  }
+  b.disabled = false;
+  b.className = 'onoff' + (on ? ' on' : '');
+  b.textContent = on ? 'On' : 'Off';
+  b.setAttribute('aria-pressed', on);
+  b.title = on ? 'Click to turn off' : 'Click to turn on';
+  $(side + '_card').classList.toggle('off', !on);
+  $(side + '_bbcol').classList.toggle('off', !on);
+}
+const MAX_UPLOAD = 1024 ** 3;              // must match MAX_UPLOAD in dvbs2_adrv.cpp
+let uploading = false;
+function sendFile() {
+  if (last && !(last.tx.on && last.rx.on)) { alert('Turn on TX and RX first'); return; }
+  const f = $('file').files[0];
+  if (!f) { alert('Choose a file to send first'); return; }
+  if (f.size > MAX_UPLOAD) { alert(`File too large: ${fmt(f.size / 1048576, 1)} MB (limit 1024 MB)`); return; }
+  if (f.size === 0) { alert('The file is empty'); return; }
+  uploading = true;
+  $('send').disabled = true;
+  const done = msg => {
+    uploading = false;
+    $('send').disabled = false;
+    $('up_hint').textContent = '';
+    if (msg) alert('Upload failed: ' + msg);
+  };
+  const x = new XMLHttpRequest();
+  x.open('POST', '/api/send?name=' + encodeURIComponent(f.name));
+  x.upload.onprogress = e => {
+    if (e.lengthComputable) $('up_hint').textContent = `Uploading ${(100 * e.loaded / e.total).toFixed(0)} %`;
+  };
+  x.onload = () => {
+    if (x.status === 200) return done('');
+    let m = x.responseText;
+    try { m = JSON.parse(m).error || m; } catch (e) {}
+    done(`HTTP ${x.status} ${m}`);
+  };
+  x.onerror = () => done('Connection lost (the file could not be read, or the program is not responding)');
+  x.ontimeout = () => done('Timed out');
+  x.send(f);
+}
+
+// RF signal tiles: [label, value, unit, sub-line, state] ; state ok / bad / dim
+function tiles(el, rows) {
+  $(el).innerHTML = rows.map(([k, v, u, sub, cls]) =>
+    `<div class="tile ${cls || ''}"><div class="k">${k}</div>` +
+    `<div class="v">${v}${v !== '—' && u ? `<span class="u">${u}</span>` : ''}</div><div class="s">${sub || ''}</div></div>`).join('');
+}
+function renderRf(rx) {
+  const on = rx.on, lk = on && rx.lock, has = v => on && v !== undefined && v !== null && !isNaN(v);
+  const cfoK = Math.abs(rx.cfo_hz) >= 1000;
+  const hot = has(rx.level_dbfs) && rx.level_dbfs > -3;
+  // decode rate: computed by the program over each 0.5 s interval (rx.rate_time changes every 0.5 s)
+  const cap = lk ? rx.capacity_bps : 0, dr = lk ? capRate(rx.rate_bps, cap) : 0, pc = lk ? capPct(rx.rate_bps, cap) : 0;
+  const hasRate = on && rx.rate_bps != null;
+  tiles('rf_tiles', [
+    ['Decode rate (% of MODCOD capacity, every 0.5 s)', hasRate ? fmt(pc, 0) : '—', '%',
+     (hasRate ? `<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pc.toFixed(0)}"><i style="width:${pc.toFixed(1)}%"></i></div>` : '') +
+     (on ? `${bps(dr)} · ${fmt(lk ? rx.frames_per_s : 0, 1)} frames/s` + (cap > 0 ? ` · capacity ${bps(cap)}` : '') : 'RX is off'),
+     !on ? 'dim span2' : lk ? 'span2' : 'dim span2'],
+    ['Lock', !on ? 'Off' : lk ? '✔ Locked' : '✖ No lock', '',
+     lk ? `${rx.modcod}${rx.pilots ? ' · pilots' : ''}` : on ? 'Searching for PLHEADER' : 'RX is off', !on ? 'dim' : lk ? 'ok' : 'bad'],
+    ['SNR Es/N0', has(rx.esn0_db) ? fmt(rx.esn0_db, 1) : '—', 'dB', 'M2M4 blind estimate, ±0.3 dB', has(rx.esn0_db) ? '' : 'dim'],
+    ['Eb/N0', lk && has(rx.ebn0_db) ? fmt(rx.ebn0_db, 1) : '—', 'dB', 'Per information bit (when locked)', lk && has(rx.ebn0_db) ? '' : 'dim'],
+    ['RSSI', has(rx.rssi_db) ? fmt(rx.rssi_db, 2) : '—', 'dB', 'AD9361, relative, not dBm', has(rx.rssi_db) ? '' : 'dim'],
+    ['Signal level', has(rx.level_dbfs) ? fmt(rx.level_dbfs, 1) : '—', 'dBFS',
+     hot ? '⚠ Near saturation, lower the RX gain' : 'ADC (incl. noise)', !has(rx.level_dbfs) ? 'dim' : hot ? 'bad' : ''],
+    ['Frequency offset (CFO)', lk ? fmt(cfoK ? rx.cfo_hz / 1e3 : rx.cfo_hz, cfoK ? 2 : 1) : '—', cfoK ? 'kHz' : 'Hz',
+     lk && rx.freq ? `${fmt(rx.cfo_hz / rx.freq * 1e6, 3)} ppm of RX frequency` : 'Shown when locked', lk ? '' : 'dim'],
+  ]);
+  $('rf_info').textContent = on ? `${mhz(rx.freq, 3)} · ${fmt(rx.rs / 1e3, 1)} ksym/s · gain ${fmt(rx.gain, 1)} dB` : '';
+}
+
+function render(s) {
+  const tx = s.tx, rx = s.rx, c = s.config;
+  if (!cfgLoaded) {
+    for (const k of ['tx_freq', 'rx_freq', 'tx_bw', 'rx_bw']) $(k).value = (c[k] / 1e6).toFixed(3);
+    $('tx_gain').value = c.tx_gain; $('rx_gain').value = c.rx_gain;
+    $('modcod').value = c.modcod_n; $('rolloff').value = Math.round(c.rolloff * 100);
+    $('pilots').checked = c.pilots; $('max_iter').value = c.max_iter;
+    $('udp_in').value = c.udp_in; $('udp_out').value = c.udp_out;
+    cfgLoaded = true;
+  }
+  $('sub').textContent = `${s.board} · FPGA ${s.fpga.version} · ${c.modcod}${c.pilots ? ' pilots' : ''} · roll-off ${c.rolloff}`;
+  $('m_prbs').className = c.data === 'prbs' && tx.mode !== 'file' ? 'sel' : '';
+  $('m_udp').className = c.data === 'udp' && tx.mode !== 'file' ? 'sel' : '';
+  $('mode_hint').textContent = tx.mode === 'file' ? 'File loopback running' : '';
+  stat('udp_stat', [
+    ['TX datagrams in', tx.mode === 'udp' ? `${fmt(tx.udp_packets)} (${fmt(tx.udp_bytes)} B)` : '—'],
+    ['TX dropped (link too slow)', tx.mode === 'udp' ? fmt(tx.udp_drops) : '—', tx.udp_drops ? 'result bad' : ''],
+    ['TX idle fill', tx.mode === 'udp' ? fmt(tx.fill) + ' B' : '—'],
+    ['RX datagrams out', rx.mode === 'udp' ? `${fmt(rx.udp_packets)} (${fmt(rx.udp_bytes)} B)` : '—'],
+    ['RX lost / bad CRC', rx.mode === 'udp' ? `${fmt(rx.udp_lost)} / ${fmt(rx.udp_bad)}` : '—', rx.udp_lost || rx.udp_bad ? 'result bad' : ''],
+    ['Saved', c.saved || '—'],
+  ]);
+  const lp = $('lockpill');
+  lp.textContent = rx.on ? (rx.lock ? 'RX locked' : 'RX not locked') : 'RX off';
+  lp.className = 'pill ' + (!rx.on ? '' : rx.lock ? 'ok' : 'bad');
+  showOnOff('tx', tx.on); showOnOff('rx', rx.on);
+  $('send').disabled = uploading || !(tx.on && rx.on);
+  $('send').title = (tx.on && rx.on) ? '' : 'Turn on TX and RX first';
+  renderRf(rx);
+  stat('tx_rf', [
+    ['Center frequency', mhz(tx.freq, 6)],
+    ['Symbol rate', fmt(tx.rs / 1e3, 1) + ' ksym/s'],
+    ['Sample rate', fmt(tx.fs / 1e6, 4) + ' MS/s (' + fmt(100 / (tx.fs / 1e6), 1) + ' clk/sample)'],
+    ['Analog filter bandwidth', mhz(tx.analog_bw, 3)],
+    ['Gain', fmt(tx.gain, 1) + ' dB'],
+  ]);
+  stat('rx_rf', [
+    ['Center frequency', mhz(rx.freq, 6)],
+    ['Symbol rate', fmt(rx.rs / 1e3, 1) + ' ksym/s'],
+    ['Analog filter bandwidth', mhz(rx.analog_bw, 3)],
+    ['Gain', fmt(rx.gain, 1) + ' dB'],
+  ]);
+  stat('tx_bb', [
+    ['Data rate (every 0.5 s)', tx.on ? bps(capRate(tx.rate_bps, tx.capacity_bps)) : '—'],
+    ['MODCOD capacity', tx.on ? usage(tx.rate_bps, tx.capacity_bps) : '—'],
+    ['Data source', tx.mode === 'file' ? 'File ' + tx.file : tx.mode === 'udp' ? 'UDP ' + c.udp_in : 'PRBS-23 (FPGA)'],
+    ['Frames encoded / sent', fmt(tx.frames_encoded) + ' / ' + fmt(tx.frames_sent)],
+    ['Dummy frames', fmt(tx.dummy)],
+    ['DAC underflow / payload overflow', fmt(tx.duc_underflow) + ' / ' + fmt(tx.host_underflow), tx.duc_underflow || tx.host_underflow ? 'result bad' : ''],
+  ]);
+  const ber = rx.ber_bits ? rx.ber_errors / rx.ber_bits : NaN;
+  stat('rx_bb', [
+    ['Decode rate (every 0.5 s)', rx.on ? bps(rx.lock ? capRate(rx.rate_bps, rx.capacity_bps) : 0) +
+       (rx.frames_per_s != null ? ` · ${fmt(rx.lock ? rx.frames_per_s : 0, 1)} frames/s` : '') : '—'],
+    ['MODCOD capacity', rx.on && rx.lock ? usage(rx.rate_bps, rx.capacity_bps) : '—'],
+    ['State', !rx.on ? 'Off' : rx.lock ? `Locked · ${rx.modcod}${rx.pilots ? ' pilots' : ''} · FLL ${rx.fll_stage}` : 'Searching', !rx.on ? '' : rx.lock ? 'result ok' : 'result bad'],
+    ['Frames / missed / PLS fail', `${fmt(rx.frames)} / ${fmt(rx.misses)} / ${fmt(rx.pls_fail)}`],
+    ['LDPC iterations / dropped', `${rx.ldpc_iters} / ${fmt(rx.ldpc_drop)}`],
+    ['BCH corrected / failed', `${fmt(rx.bch_corr)} / ${fmt(rx.bch_fail)}`, rx.bch_fail ? 'result bad' : ''],
+    ['BBFRAME OK / CRC error', `${fmt(rx.bb_ok)} / ${fmt(rx.bb_crc)}`],
+    ['BER', rx.mode === 'prbs' ? (rx.ber_lock ? `${ber.toExponential(2)} (${fmt(rx.ber_errors)}/${fmt(rx.ber_bits)})` : 'Not synced') : rx.mode === 'udp' ? 'UDP mode' : 'File mode'],
+    ['ADC overflow', fmt(rx.host_overflow), rx.host_overflow ? 'result bad' : ''],
+  ]);
+  const fs = ['Waiting for header', 'Receiving', 'Done'][rx.file_state] || '—';
+  const res = rx.result || '';
+  stat('file_stat', tx.mode === 'file' ? [
+    ['File', tx.file],
+    ['TX bytes sent', fmt(tx.bytes) + (tx.done ? ' (done)' : '')],
+    ['RX state', fs],
+    ['RX written', `${fmt(rx.file_written)} / ${fmt(rx.file_len)} B`],
+    ['TX send rate', tx.done ? '—' : bps(tx.host_bps, true)],
+    ['RX write rate', rx.file_state === 1 ? bps(rx.file_bps, true) : '—'],
+    ['Time remaining (est.)', rx.file_state === 1 && rx.file_len && rx.file_bps > 0 ? dur((rx.file_len - rx.file_written) * 8 / rx.file_bps) : '—'],
+    ['Sequence gaps', fmt(rx.seq_gaps), rx.seq_gaps ? 'result bad' : ''],
+    ['Comparison', res || '—', res.startsWith('identical') ? 'result ok' : res ? 'result bad' : ''],
+  ] : [['Mode', (tx.on && rx.on) ? (c.data === 'udp' ? 'UDP data' : 'PRBS test') + ' (choose a file and press "Send file" to start a file loopback)' : 'File transfer needs TX and RX on'],
+        ...(res ? [['Message', res, 'result bad']] : [])]);
+  $('prog').value = rx.file_len ? rx.file_written / rx.file_len : 0;
+  addRatePoint(rx);
+  $('dl').style.display = rx.file_state === 2 ? '' : 'none';
+}
+
+function drawSpectrum(sp) {
+  const cv = $('spec'), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement);
+  g.fillStyle = css.getPropertyValue('--plot-bg'); g.fillRect(0, 0, W, H);
+  const L = 48, R = 12, T = 10, B = 26, pw = W - L - R, ph = H - T - B;
+  const db = sp.db || [];
+  const top = 0, bot = -110;
+  g.strokeStyle = css.getPropertyValue('--plot-grid'); g.lineWidth = 1;
+  g.fillStyle = '#8b949e'; g.font = '11px system-ui'; g.textAlign = 'right'; g.textBaseline = 'middle';
+  for (let v = top; v >= bot; v -= 10) {
+    const y = T + (top - v) / (top - bot) * ph;
+    g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke();
+    if (v % 20 === 0) g.fillText(v + '', L - 6, y);
+  }
+  if (!db.length) {
+    g.textAlign = 'center';
+    g.fillText(last && !last.rx.on ? 'RX is off' : 'Waiting for spectrum data…',
+               L + pw / 2, T + ph / 2);
+    $('spec_info').textContent = '';
+    return;
+  }
+  const span = sp.fs, n = db.length;
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  const step = span / 1e6 > 8 ? 2e6 : span / 1e6 > 4 ? 1e6 : span / 1e6 > 1.5 ? 0.5e6 : 0.25e6;
+  for (let f = -Math.floor(span / 2 / step) * step; f <= span / 2; f += step) {
+    const x = L + (f / span + 0.5) * pw;
+    g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
+    g.fillText((f / 1e6).toFixed(2), x, T + ph + 6);
+  }
+  // occupied bandwidth of the RX setting
+  if (last) {
+    const bw = last.config.rx_bw;
+    g.fillStyle = 'rgba(210,153,34,.10)';
+    g.fillRect(L + (0.5 - bw / span / 2) * pw, T, bw / span * pw, ph);
+  }
+  g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = L + i / (n - 1) * pw;
+    const y = T + Math.min(Math.max((top - db[i]) / (top - bot), 0), 1) * ph;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.strokeStyle = css.getPropertyValue('--plot-line'); g.lineWidth = 1.4; g.stroke();
+  g.lineTo(L + pw, T + ph); g.lineTo(L, T + ph); g.closePath();
+  g.fillStyle = css.getPropertyValue('--plot-fill'); g.fill();
+  $('spec_info').textContent = `Center ${(sp.fc / 1e6).toFixed(3)} MHz · span ${(span / 1e6).toFixed(3)} MHz · dBFS (x axis: MHz from center)`;
+}
+
+// ---- RX decode-rate history: one point per 0.5 s server interval (rx.rate_time changes)
+const RATE_SPAN = 120;                     // seconds shown
+const rateHist = [];                       // {t: ms (browser clock), bps, pct (0-100), fps, cap}
+let rateKey = null, rateHover = -1;
+function addRatePoint(rx) {
+  if (rx.rate_time === undefined) return;            // older program: no history
+  const key = rx.on ? rx.rate_time : 'off';
+  if (key === rateKey) return;
+  rateKey = key;
+  if (!rx.on || !rx.rate_interval) return;           // RX off / first interval of a session: no point
+  const lock = rx.lock;
+  const cap = lock ? rx.capacity_bps : 0;
+  rateHist.push({t: Date.now(), bps: lock ? capRate(rx.rate_bps, cap) : 0, pct: lock ? capPct(rx.rate_bps, cap) : 0,
+                 fps: lock ? rx.frames_per_s : 0, cap});
+  while (rateHist.length && rateHist[0].t < Date.now() - (RATE_SPAN + 5) * 1000) {
+    rateHist.shift();
+    if (rateHover >= 0) rateHover--;                 // keep the hovered point under the crosshair
+  }
+  drawRate();
+  if ($('rate_tbl').open) fillRateTable();
+}
+function rateGeom() {
+  const cv = $('rate'), W = cv.clientWidth, H = cv.clientHeight;
+  const L = 56, R = 96, T = 12, B = 26;
+  const now = Date.now();
+  const cap = rateHist.length ? rateHist[rateHist.length - 1].cap : 0;
+  const ymax = 100, step = 25;               // fixed 0-100 % of the MODCOD capacity
+  return {W, H, L, R, T, B, pw: W - L - R, ph: H - T - B, now, cap, ymax, step,
+          x: t => L + (1 - (now - t) / (RATE_SPAN * 1000)) * (W - L - R),
+          y: v => T + (1 - v / ymax) * (H - T - B)};
+}
+function drawRate() {
+  const cv = $('rate'), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement);
+  const G = rateGeom(), {L, T, pw, ph} = G;
+  g.fillStyle = css.getPropertyValue('--plot-bg'); g.fillRect(0, 0, W, H);
+  // grid + axes (hairline, recessive)
+  g.strokeStyle = css.getPropertyValue('--plot-grid'); g.lineWidth = 1;
+  g.fillStyle = '#8b949e'; g.font = '11px system-ui'; g.textAlign = 'right'; g.textBaseline = 'middle';
+  for (let v = 0; v <= G.ymax; v += G.step) {
+    const y = Math.round(G.y(v)) + 0.5;
+    g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke();
+    g.fillText(v + ' %', L - 6, y);
+  }
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  for (let s = 0; s <= RATE_SPAN; s += 20) {
+    const x = Math.round(L + (1 - s / RATE_SPAN) * pw) + 0.5;
+    g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
+    g.fillText(s ? `−${s} s` : 'now', x, T + ph + 6);
+  }
+  const pts = rateHist.filter(p => G.now - p.t <= RATE_SPAN * 1000);
+  if (!pts.length) {
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(last && !last.rx.on ? 'RX is off' : 'Waiting for data…', L + pw / 2, T + ph / 2);
+    $('rate_info').textContent = '';
+    return;
+  }
+  // 100 % = MODCOD capacity at the current symbol rate
+  if (G.cap > 0) {
+    g.fillStyle = '#8b949e'; g.textAlign = 'left'; g.textBaseline = 'top';
+    g.fillText('100 % = MODCOD capacity ' + bps(G.cap), L + 6, T + 4);
+  }
+  // area wash + 2px line (gap where the series is interrupted > 1.5 s)
+  const line = css.getPropertyValue('--plot-line');
+  const runs = [];
+  for (const p of pts) {
+    const r = runs[runs.length - 1];
+    if (r && p.t - r[r.length - 1].t < 1500) r.push(p); else runs.push([p]);
+  }
+  for (const r of runs) {
+    g.beginPath();
+    r.forEach((p, i) => i ? g.lineTo(G.x(p.t), G.y(p.pct)) : g.moveTo(G.x(p.t), G.y(p.pct)));
+    g.lineWidth = 2; g.lineJoin = 'round'; g.lineCap = 'round'; g.strokeStyle = line; g.stroke();
+    g.lineTo(G.x(r[r.length - 1].t), G.y(0)); g.lineTo(G.x(r[0].t), G.y(0)); g.closePath();
+    g.fillStyle = 'rgba(88,166,255,.10)'; g.fill();
+  }
+  // end dot with surface ring + end label (text in ink, not the series color)
+  const e = pts[pts.length - 1], ex = G.x(e.t), ey = G.y(e.pct);
+  g.beginPath(); g.arc(ex, ey, 6, 0, 2 * Math.PI); g.fillStyle = css.getPropertyValue('--plot-bg'); g.fill();
+  g.beginPath(); g.arc(ex, ey, 4, 0, 2 * Math.PI); g.fillStyle = line; g.fill();
+  g.fillStyle = '#e6edf3'; g.font = '600 12px system-ui'; g.textAlign = 'left'; g.textBaseline = 'middle';
+  g.fillText(fmt(e.pct, 0) + ' %', ex + 10, Math.min(Math.max(ey, T + 6), T + ph - 6));
+  // crosshair for the hovered / focused point
+  const h = rateHover >= 0 && rateHover < rateHist.length ? rateHist[rateHover] : null;
+  if (h && G.now - h.t <= RATE_SPAN * 1000) {
+    const hx = Math.round(G.x(h.t)) + 0.5, hy = G.y(h.pct);
+    g.strokeStyle = '#8b949e'; g.lineWidth = 1; g.beginPath(); g.moveTo(hx, T); g.lineTo(hx, T + ph); g.stroke();
+    g.beginPath(); g.arc(hx, hy, 6, 0, 2 * Math.PI); g.fillStyle = css.getPropertyValue('--plot-bg'); g.fill();
+    g.beginPath(); g.arc(hx, hy, 4, 0, 2 * Math.PI); g.fillStyle = line; g.fill();
+  }
+  showRateTip();
+  const avg = pts.reduce((a, p) => a + p.pct, 0) / pts.length;
+  $('rate_info').textContent = `Now ${fmt(e.pct, 0)} % (${bps(e.bps)}) · ${fmt(e.fps, 1)} frames/s · chart average ${fmt(avg, 0)} %`;
+}
+function tipTime(t) { return new Date(t).toLocaleTimeString(undefined, {hour12: false}); }
+function showRateTip() {
+  const tip = $('rate_tip');
+  const h = rateHover >= 0 && rateHover < rateHist.length ? rateHist[rateHover] : null;
+  const G = rateGeom();
+  if (!h || G.now - h.t > RATE_SPAN * 1000) { tip.style.display = 'none'; return; }
+  tip.replaceChildren();
+  const row = (cls, text) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = text; return d; };
+  const top = document.createElement('div');
+  const key = document.createElement('span'); key.className = 'k';
+  const v = document.createElement('span'); v.className = 'v'; v.textContent = fmt(h.pct, 0) + ' %';
+  top.append(key, v);
+  tip.append(top, row('', `${bps(h.bps)} · ${fmt(h.fps, 1)} frames/s`),
+             row('m', `RX decode rate · ${tipTime(h.t)} (${fmt((G.now - h.t) / 1000, 1)} s ago)`));
+  tip.style.display = 'block';
+  const x = G.x(h.t), wrapW = $('rate').clientWidth, tw = tip.offsetWidth;
+  tip.style.left = (x + 12 + tw <= wrapW ? x + 12 : Math.max(0, x - 12 - tw)) + 'px';   // flip left near the right edge
+  tip.style.top = G.T + 4 + 'px';
+}
+function nearestRate(px) {
+  const G = rateGeom();
+  let best = -1, bd = 1e9;
+  rateHist.forEach((p, i) => {
+    if (G.now - p.t > RATE_SPAN * 1000) return;
+    const d = Math.abs(G.x(p.t) - px);
+    if (d < bd) { bd = d; best = i; }
+  });
+  return best;
+}
+$('rate').addEventListener('pointermove', ev => {
+  const r = $('rate').getBoundingClientRect();
+  rateHover = nearestRate(ev.clientX - r.left);
+  drawRate();
+});
+$('rate').addEventListener('pointerleave', () => { rateHover = -1; drawRate(); });
+$('rate').addEventListener('blur', () => { rateHover = -1; drawRate(); });
+$('rate').addEventListener('keydown', ev => {
+  if (!rateHist.length || (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight' && ev.key !== 'Escape')) return;
+  ev.preventDefault();
+  if (ev.key === 'Escape') rateHover = -1;
+  else if (rateHover < 0) rateHover = rateHist.length - 1;
+  else rateHover = Math.min(rateHist.length - 1, Math.max(0, rateHover + (ev.key === 'ArrowRight' ? 1 : -1)));
+  drawRate();
+});
+function fillRateTable() {
+  const tb = $('rate_rows');
+  tb.replaceChildren();
+  for (const p of rateHist.slice(-20).reverse()) {
+    const tr = document.createElement('tr');
+    for (const v of [tipTime(p.t), fmt(p.pct, 0) + ' %', bps(p.bps), fmt(p.fps, 1)]) {
+      const td = document.createElement('td'); td.textContent = v; tr.append(td);
+    }
+    tb.append(tr);
+  }
+}
+$('rate_tbl').addEventListener('toggle', () => { if ($('rate_tbl').open) fillRateTable(); });
+window.addEventListener('resize', drawRate);
+drawRate();
+
+const POLL_MS = 100;                       // 10 Hz refresh
+async function poll() {
+  const t0 = performance.now();
+  try {
+    const [s, sp] = await Promise.all([fetch('/api/status').then(r => r.json()), fetch('/api/spectrum').then(r => r.json())]);
+    if (s.tx) { last = s; render(s); }
+    drawSpectrum(sp);
+    $('conn').textContent = 'Connected'; $('conn').className = 'pill ok';
+  } catch (e) {
+    $('conn').textContent = 'Disconnected'; $('conn').className = 'pill bad';
+  }
+  setTimeout(poll, Math.max(0, POLL_MS - (performance.now() - t0)));
+}
+poll();
+</script>
+</body>
+</html>

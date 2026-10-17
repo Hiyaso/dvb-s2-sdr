@@ -27,3 +27,10 @@ b210/build_fpga.log*
 b210/host/dvbs2_files/
 dvbs2_files/
 b210/build_fpga.out
+
+# ADRV9364-Z7020 (downloads, ADI HDL checkout, build outputs)
+adrv9364/dl/
+adrv9364/adi-hdl/
+adrv9364/out/
+adrv9364/sw/build/
+adrv9364/sim/out/

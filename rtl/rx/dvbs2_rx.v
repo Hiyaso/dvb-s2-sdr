@@ -72,7 +72,7 @@ module dvbs2_rx #(
 );
 // ---------------------------------------------------------------- front end
 wire pc_v; wire signed [15:0] pc_i, pc_q;
-sample_pacer #(.MIN_GAP(6)) u_pacer (.clk(clk), .rst(rst), .in_valid(in_valid), .in_i(in_i), .in_q(in_q),
+sample_pacer #(.MIN_GAP(7)) u_pacer (.clk(clk), .rst(rst), .in_valid(in_valid), .in_i(in_i), .in_q(in_q),
     .out_valid(pc_v), .out_i(pc_i), .out_q(pc_q), .overflow(st_pacer_ovf));
 wire ag_v; wire signed [15:0] ag_i, ag_q;
 rx_agc u_agc (.clk(clk), .rst(rst), .enable(agc_en), .target(agc_target), .mu(agc_mu),

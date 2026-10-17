@@ -1,0 +1,12 @@
+[Unit]
+Description=DVB-S2 modem (web page + UDP data link)
+After=network-online.target iiod.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/dvbs2_adrv --config /etc/dvbs2.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -12,8 +12,10 @@
 //   RX  DDC samples --> dvbs2_rx --> decoded data-field bytes
 //                   --(rx_data=0)--> host (I/Q samples, as usual)
 //       (rx_data=1)  bytes --> host: I = {6'b0, last, valid, byte}, Q = byte counter
-//  Spectrum snapshot: writing register 8 with bit 0 set captures 1024 consecutive
-//  DDC samples (before the modem); status word 29 bit 31 = done, bit 30 = busy.
+//  Snapshot: writing register 8 with bit 0 set captures 1024 consecutive
+//  DDC samples (before the modem; bit 1 = 0, spectrum) or 1024 data symbols after
+//  carrier recovery (bit 1 = 1, constellation, radius 4096; only while locked).
+//  Status word 29 bit 31 = done, bit 30 = busy, bit 29 = source of the capture.
 //  rb_addr[7] = 1 reads the capture: 64-bit word {rb_addr[6:0]} of page reg8[9:8]
 //  = samples 2w (low half) and 2w+1 (high half), each {I, Q}.
 //
@@ -44,7 +46,7 @@ module dvbs2_b210 #(
     output wire [31:0] rx_host_sample
 );
 localparam [31:0] ID      = 32'h44564232;   // "DVB2"
-localparam [31:0] VERSION = 32'h00020001;   // 2.1 (B210, spectrum snapshot)
+localparam [31:0] VERSION = 32'h00020002;   // 2.2 (B210, spectrum + constellation snapshot)
 
 // ---------------------------------------------------------------- registers
 localparam [31:0] D_CTRL  = 32'h0000_01C0;  // pll_en, agc_en, early_stop
@@ -57,12 +59,12 @@ localparam [31:0] D_FEC   = {5'd0, 3'd0, 2'd0, 6'd25, 8'd16, 8'd24};
 reg [31:0] r_ctrl, r_txcfg, r_agc, r_tim, r_fs, r_fll, r_fec;
 reg        clr;
 reg  [1:0] cap_page;
-reg        cap_start;
+reg        cap_start, cap_src;
 always @(posedge clk) begin
     if (rst) begin
         r_ctrl <= D_CTRL; r_txcfg <= D_TXCFG; r_agc <= D_AGC; r_tim <= D_TIM;
         r_fs <= D_FS; r_fll <= D_FLL; r_fec <= D_FEC; clr <= 1'b0;
-        cap_page <= 2'd0; cap_start <= 1'b0;
+        cap_page <= 2'd0; cap_start <= 1'b0; cap_src <= 1'b0;
     end else begin
         clr <= 1'b0;
         cap_start <= 1'b0;
@@ -75,7 +77,10 @@ always @(posedge clk) begin
             8'd5: r_fll   <= set_data;
             8'd6: r_fec   <= set_data;
             8'd7: clr     <= 1'b1;
-            8'd8: begin cap_page <= set_data[9:8]; cap_start <= set_data[0]; end
+            8'd8: begin
+                cap_page <= set_data[9:8]; cap_start <= set_data[0];
+                if (set_data[0]) cap_src <= set_data[1];
+            end
             default: ;
         endcase
     end
@@ -149,6 +154,7 @@ wire [3:0]  st_fs; wire st_lock, st_berlock, st_povf; wire [4:0] st_mc; wire [1:
 wire signed [31:0] st_om;
 wire [31:0] st_frames, st_miss, st_plsf, st_dec, st_drop, st_bcor, st_bfail, st_ok, st_crc, st_bbf, st_berr;
 wire [5:0]  st_iters; wire [7:0] st_mat; wire [47:0] st_bbits;
+wire        sym_v; wire [15:0] sym_i, sym_q;
 dvbs2_rx #(.P(LDPC_P)) u_rx (
     .clk(clk), .rst(rst_rx), .rolloff(r_txcfg[13:12]),
     .agc_en(agc_en), .agc_target(r_agc[15:0]), .agc_mu(r_agc[19:16]),
@@ -165,7 +171,8 @@ dvbs2_rx #(.P(LDPC_P)) u_rx (
     .st_fll_stage(st_stage), .st_sym_gain(st_sgain), .st_plsq(st_plsq), .st_ldpc_dec(st_dec),
     .st_ldpc_drop(st_drop), .st_ldpc_iters(st_iters), .st_bch_corr(st_bcor), .st_bch_fail(st_bfail),
     .st_bb_ok(st_ok), .st_bb_crc(st_crc), .st_bb_bchfail(st_bbf), .st_dfl(st_dfl), .st_matype(st_mat),
-    .st_ber_bits(st_bbits), .st_ber_errors(st_berr), .st_ber_lock(st_berlock), .st_pacer_ovf(st_povf));
+    .st_ber_bits(st_bbits), .st_ber_errors(st_berr), .st_ber_lock(st_berlock), .st_pacer_ovf(st_povf),
+    .sym_valid(sym_v), .sym_i(sym_i), .sym_q(sym_q));
 
 // decoded bytes -> host words
 wire        ob_full, ob_empty;
@@ -184,7 +191,9 @@ end
 assign rx_host_sample = !(rx_data && rx_en) ? rx_ddc_sample :
                         ob_empty ? {16'd0, ob_seq} : {6'd0, ob_dout[8], 1'b1, ob_dout[7:0], ob_seq};
 
-// ---------------------------------------------------------------- spectrum snapshot
+// ---------------------------------------------------------------- snapshot (spectrum / constellation)
+wire        cap_v = cap_src ? sym_v : (rx_strobe && rx_run);
+wire [31:0] cap_d = cap_src ? {sym_i, sym_q} : rx_ddc_sample;
 reg        cap_busy, cap_done;
 reg [9:0]  cap_cnt;
 reg [31:0] cap_first;
@@ -200,11 +209,11 @@ always @(posedge clk) begin
         cap_we <= 1'b0;
         if (cap_start) begin
             cap_busy <= 1'b1; cap_done <= 1'b0; cap_cnt <= 10'd0;
-        end else if (cap_busy && rx_strobe && rx_run) begin
+        end else if (cap_busy && cap_v) begin
             cap_cnt <= cap_cnt + 10'd1;
-            if (!cap_cnt[0]) cap_first <= rx_ddc_sample;
+            if (!cap_cnt[0]) cap_first <= cap_d;
             else begin
-                cap_we <= 1'b1; cap_waddr <= cap_cnt[9:1]; cap_wdata <= {rx_ddc_sample, cap_first};
+                cap_we <= 1'b1; cap_waddr <= cap_cnt[9:1]; cap_wdata <= {cap_d, cap_first};
             end
             if (cap_cnt == 10'd1023) begin cap_busy <= 1'b0; cap_done <= 1'b1; end
         end
@@ -261,7 +270,7 @@ assign status[25*32 +: 32] = c_rxbytes;
 assign status[26*32 +: 32] = c_ducuf;
 assign status[27*32 +: 32] = c_rxsamp;
 assign status[28*32 +: 32] = c_txsamp;
-assign status[29*32 +: 32] = {cap_done, cap_busy, r_ctrl[29:0]};
+assign status[29*32 +: 32] = {cap_done, cap_busy, cap_src, r_ctrl[28:0]};
 assign status[30*32 +: 32] = ID;
 assign status[31*32 +: 32] = VERSION;
 always @(posedge clk) rb_data <= rb_addr[7] ? cap_q : status[rb_addr[3:0]*64 +: 64];

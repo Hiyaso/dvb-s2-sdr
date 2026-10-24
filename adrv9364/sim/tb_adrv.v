@@ -196,6 +196,26 @@ begin
 end
 endtask
 
+// ---------------------------------------------------------------- constellation check
+// symbol {I, Q} (radius 4096): distance to the nearest ideal point, radius, power
+real    c_err, c_rad, c_mer;
+integer c_n, c_ok, c_m;
+task const_add(input [31:0] w);
+    real yi, yq, a, d, dm;
+    begin
+        yi = $itor($signed(w[31:16])); yq = $itor($signed(w[15:0]));
+        dm = 1.0e30;
+        for (c_m = 0; c_m < (MODCOD >= 12 ? 8 : 4); c_m = c_m + 1) begin
+            a = (MODCOD >= 12 ? c_m : 2 * c_m + 1) * 3.14159265358979 / 4.0;   // 8PSK k pi/4, QPSK (2k+1) pi/4
+            d = (yi - 4096.0 * $cos(a)) * (yi - 4096.0 * $cos(a)) + (yq - 4096.0 * $sin(a)) * (yq - 4096.0 * $sin(a));
+            if (d < dm) dm = d;
+        end
+        c_err = c_err + dm;
+        c_rad = c_rad + $sqrt(yi * yi + yq * yq);
+        c_n   = c_n + 1;
+    end
+endtask
+
 // ---------------------------------------------------------------- control + checks
 reg [31:0] ok0, st0;
 integer i, nb, settle_bytes, cap_nz, cap_ok, base, nerr, txovf, dacuf, adcovf, rxfr;
@@ -240,6 +260,21 @@ initial begin
             if (rb >= NOK || cyc > MAXCYC) disable run;
         end
     end
+    // constellation snapshot (TX still sending data frames): 1024 data symbols after carrier recovery
+    wr_b(16'h0020, 32'd3);
+    c_ok = 0; c_n = 0; c_err = 0.0; c_rad = 0.0;
+    for (i = 0; i < 100 && !c_ok; i = i + 1) begin
+        repeat (5000) @(posedge clk);
+        if (DATA) read_frames;
+        rd_b(16'h0174); c_ok = rb[31] && rb[29];
+    end
+    for (i = 0; i < 1024 && c_ok; i = i + 1) begin
+        rd_b(16'h1000 + 4 * i);
+        const_add(rb);
+    end
+    c_mer = c_n ? 10.0 * $log10(c_n * 4096.0 * 4096.0 / c_err) : 0.0;
+    $display("constellation snapshot: done=%0d, %0d symbols, mean radius %0.0f, MER %0.1f dB", c_ok, c_n,
+             c_n ? c_rad / c_n : 0.0, c_mer);
     if (DATA) read_frames;
     a_pause = 1; if (DATA) wait (a_idle);
     done = 1;
@@ -288,7 +323,9 @@ initial begin
     end
     rd_b(16'h0128); ok0 = rb;
     rd_b(16'h012C);
-    if (cap_ok && cap_nz >= 1000 && ok0 >= NOK && rb == 0 && txovf == 0 && dacuf == 0 && adcovf == 0
+    if (cap_ok && cap_nz >= 1000 && c_n == 1024 && c_rad / c_n > 3300.0 && c_rad / c_n < 5000.0
+        && c_mer > (MODCOD >= 12 ? 8.0 : 3.0)
+        && ok0 >= NOK && rb == 0 && txovf == 0 && dacuf == 0 && adcovf == 0
         && (DATA ? (base >= 0 && nerr == 0 && nb > 1000 && badlen == 0) : 1)) begin
         rd_b(16'h0130); if (rb == 0) $display("PASS"); else $display("FAIL (bch failures)");
     end else $display("FAIL");

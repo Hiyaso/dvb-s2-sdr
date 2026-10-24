@@ -10,7 +10,7 @@ run() { # name modcod pilots data noise [extra verilator args]
   d=out/reg_b210/$1; mkdir -p $d
   $VL tb_b210 $d -GMODCOD=$2 -GPILOTS=$3 -GDATA=$4 -GNOISE=$5 "${@:6}" +define+DVBS2_FIR_FOLD +define+SPARTAN6 > /dev/null || { echo "$1: BUILD FAIL"; return; }
   (cd $d && to 5000 ./obj/tb_b210 > sim.log)
-  echo "$1: $(grep -E 'payload|ber_errors|PASS|FAIL' $d/sim.log | tr '\n' ' ')"
+  echo "$1: $(grep -E 'payload|ber_errors|constellation|PASS|FAIL' $d/sim.log | tr '\n' ' ')"
 }
 run p23_data_es10   13 1 1 4487 &
 run q12_prbs_es4    4  1 0 8953 &

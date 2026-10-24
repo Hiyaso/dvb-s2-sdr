@@ -68,7 +68,12 @@ module dvbs2_rx #(
     output wire [47:0]        st_ber_bits,
     output wire [31:0]        st_ber_errors,
     output wire               st_ber_lock,
-    output wire               st_pacer_ovf
+    output wire               st_pacer_ovf,
+    // constellation tap: data symbols as taken by rx_demap (carrier corrected,
+    // PL descrambled, radius 4096), registered
+    output reg                sym_valid,
+    output reg  signed [15:0] sym_i,
+    output reg  signed [15:0] sym_q
 );
 // ---------------------------------------------------------------- front end
 wire pc_v; wire signed [15:0] pc_i, pc_q;
@@ -101,6 +106,15 @@ rx_frame u_frame (
     .st_state(st_fs_state), .st_locked(st_locked), .st_modcod(st_modcod), .st_type(st_type),
     .st_omega(st_omega), .st_frames(st_frames), .st_misses(st_misses), .st_plsfail(st_plsfail),
     .st_stage(st_fll_stage), .st_gain(st_sym_gain), .st_plsq(st_plsq));
+
+always @(posedge clk) begin
+    if (rst) begin
+        sym_valid <= 1'b0; sym_i <= 16'sd0; sym_q <= 16'sd0;
+    end else begin
+        sym_valid <= fs_v && fs_rdy;
+        if (fs_v && fs_rdy) begin sym_i <= fs_i; sym_q <= fs_q; end
+    end
+end
 
 // ---------------------------------------------------------------- FEC
 wire ld_start, ld_valid, ld_end; wire [3:0] ld_code; wire [15:0] ld_meta; wire [1:0] ld_stream;

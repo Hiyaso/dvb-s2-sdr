@@ -28,7 +28,7 @@ README.md, z7020/README.md, b210/README.md and adrv9364/README.md are user-facin
 | `z7020/sim/tb_top.v`, `z7020/doc/register_map.md` | AXI-Lite top testbench, AXI-Lite register map |
 | `b210/rtl/` | `dvbs2_b210` wrapper (user-settings regs, payload bytes inside IQ samples) + FIFO |
 | `b210/sim/` | `tb_b210.v` + `reg_b210.sh` (outputs in `b210/sim/out/`) |
-| `adrv9364/rtl/` | `dvbs2_adrv` wrapper (AXI-Lite 0x44A00000, 16 kB payload FIFOs, CDC FIFOs to l_clk, spectrum snapshot) |
+| `adrv9364/rtl/` | `dvbs2_adrv` wrapper (AXI-Lite 0x44A00000, 16 kB payload FIFOs, CDC FIFOs to l_clk, spectrum / constellation snapshot) |
 | `adrv9364/hdl/` | ADI project files copied into `<adi-hdl>/projects/adrv9364z7020/dvbs2/` (block design insertion, SOM-only top, CDC xdc) |
 | `adrv9364/` | `build_fpga.sh` (ADI HDL + Vivado → BOOT.BIN), `make_sd_image.sh` (Kuiper image + service, no root: mtools/debugfs), `lib.sh`, `sw/` (ARM program, web UI, mock test), `rootfs/`, `sim/` |
 | `b210/` | `patch_uhd_fpga.py` (copies `rtl/{common,gen,tx,rx}` + `b210/rtl` into UHD), `build_fpga.sh` (ISE), `host/dvbs2_b210.cpp` (UHD C++ PC program) + `host/web/index.html` |

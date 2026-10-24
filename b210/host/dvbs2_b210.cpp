@@ -9,7 +9,7 @@
 //         or UDP datagrams (--udp-in, framed as in udp_frame.hpp)
 //   * RX: reports lock / MODCOD / CFO / FEC / BER once per second; optional payload
 //         bytes to a file / stdout, or the recovered UDP datagrams (--udp-out)
-//   * --web PORT: web page with TX/RX status, received spectrum and file loopback;
+//   * --web PORT: web page with TX/RX status, received spectrum, constellation and file loopback;
 //         TX/RX frequency, bandwidth and gain can be changed while running
 //
 // Two PCs:   PC1:  dvbs2_b210 --mode tx --fpga usrp_b210_dvbs2_fpga.bin --freq 2.45e9 --rs 1e6
@@ -62,6 +62,7 @@ enum : uint32_t {
 };
 static const uint32_t MODEM_ID = 0x44564232;   // "DVB2"
 static const int CAP_N         = 1024;         // spectrum snapshot length (samples)
+static const int CONST_N       = 512;          // constellation points read per snapshot (of the 1024 captured)
 
 struct Modem {
     uhd::wb_iface::sptr regs;
@@ -112,6 +113,32 @@ struct Modem {
                 for (int h = 0; h < 2; h++) {
                     uint32_t s = uint32_t(v >> (32 * h));
                     x.emplace_back(float(int16_t(s >> 16)), float(int16_t(s & 0xFFFF)));
+                }
+            }
+        }
+        return x;
+    }
+    // CONST_N data symbols after carrier recovery (FPGA version >= 2.2), scaled to radius 1;
+    // empty if the capture did not finish (receiver not locked, only dummy frames)
+    std::vector<std::complex<float>> constellation()
+    {
+        std::vector<std::complex<float>> x;
+        wr(REG_CAP, 3);
+        bool done = false;
+        for (int t = 0; t < 50 && !done; t++) {
+            const uint32_t w29 = uint32_t(rd(8 * 14) >> 32);
+            done = (w29 >> 31) & (w29 >> 29) & 1;              // done, source = symbols
+            if (!done) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        if (!done) return x;
+        x.reserve(CONST_N);
+        for (uint32_t page = 0; page < uint32_t(CONST_N / 256); page++) {
+            wr(REG_CAP, page << 8);
+            for (uint32_t w = 0; w < 128; w++) {
+                uint64_t v = rd(8 * (128 + w));
+                for (int h = 0; h < 2; h++) {
+                    uint32_t s = uint32_t(v >> (32 * h));
+                    x.emplace_back(float(int16_t(s >> 16)) / 4096.0f, float(int16_t(s & 0xFFFF)) / 4096.0f);
                 }
             }
         }
@@ -1126,10 +1153,13 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         fprintf(stderr, "DVB-S2 modem not found in the FPGA (ID word 0x%08x). Is --fpga the DVB-S2 image?\n", s0[30]);
         return EXIT_FAILURE;
     }
-    const bool has_cap = (s0[31] & 0xFFFF) >= 1;     // version 2.1: spectrum snapshot
+    const bool has_cap   = (s0[31] & 0xFFFF) >= 1;   // version 2.1: spectrum snapshot
+    const bool has_const = (s0[31] & 0xFFFF) >= 2;   // version 2.2: constellation snapshot
     fprintf(g_log, "DVB-S2 modem found, version %u.%u\n", s0[31] >> 16, s0[31] & 0xFFFF);
     if (web && !has_cap)
         fprintf(g_log, "note: this FPGA image has no spectrum snapshot (version < 2.1), the web page shows no spectrum\n");
+    else if (web && !has_const)
+        fprintf(g_log, "note: this FPGA image has no constellation snapshot (version < 2.2), the web page shows no constellation\n");
     if (web) mkdir(file_dir.c_str(), 0755);
     if (web_root.empty()) web_root = exe_dir() + "/../web";
 
@@ -1250,30 +1280,38 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
 
     start_session(input, output, input);
 
-    // ---- web status / spectrum
+    // ---- web status / spectrum / constellation
     std::vector<float> spec_db;
     double spec_fs = 0, spec_fc = 0;
+    std::vector<std::complex<float>> const_x;  // latest constellation (radius 1)
+    double const_t = 0;                        // time it was read
     // file mode: the RX stream carries payload bytes, so the spectrum comes from the FPGA snapshot,
-    // read in its own thread (~0.3 s per snapshot) to keep the status at 10 Hz
+    // read in its own thread (~0.3 s per snapshot) to keep the status at 10 Hz; the constellation
+    // (data symbols, ~0.08 s per snapshot) is read there too, in both modes, while RX is locked
     std::mutex snap_m, snap_busy;              // snap_busy: held per snapshot and around radio reconfiguration
-    std::vector<std::complex<float>> snap_x;
-    std::atomic<bool> snap_on{false};
+    std::vector<std::complex<float>> snap_x, snap_c;
+    std::atomic<bool> snap_on{false}, const_on{false};
     std::thread snap_thread;
     if (web && has_cap && do_rx)
         snap_thread = std::thread([&] {
             while (!stop_signal) {
-                if (!snap_on) {
+                if (!snap_on && !const_on) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                     continue;
                 }
-                std::vector<std::complex<float>> x;
+                std::vector<std::complex<float>> x, c;
                 {
                     std::lock_guard<std::mutex> b(snap_busy);
                     if (snap_on) x = modem.snapshot();
+                    if (const_on) c = modem.constellation();
                 }
                 if (x.size() == size_t(CAP_N)) {
                     std::lock_guard<std::mutex> l(snap_m);
                     snap_x.swap(x);
+                }
+                if (!c.empty()) {
+                    std::lock_guard<std::mutex> l(snap_m);
+                    snap_c.swap(c);
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
@@ -1306,6 +1344,20 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
     auto update_web = [&](const std::vector<uint32_t>& s) {
         // spectrum: latest 1024-sample capture (Hann window, dBFS)
         if (!S.do_rx) spec_db.clear();                    // RX off: no spectrum
+        // constellation: latest symbol capture; dropped when RX is off, unlocked or no new capture for 1.5 s
+        {
+            const double tnow = std::chrono::duration<double>(std::chrono::steady_clock::now() - S.t0).count();
+            std::vector<std::complex<float>> c;
+            {
+                std::lock_guard<std::mutex> l(snap_m);
+                c.swap(snap_c);
+            }
+            if (!c.empty()) {
+                const_x.swap(c);
+                const_t = tnow;
+            }
+            if (!S.do_rx || !((s[0] >> 4) & 1) || tnow - const_t > 1.5 || tnow < const_t) const_x.clear();
+        }
         if (S.do_rx) {
             std::vector<std::complex<float>> x;
             if (!S.rx_data) {                              // PRBS: raw samples from the RX stream
@@ -1380,7 +1432,7 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         std::ostringstream j;
         j.precision(10);
         j << "{\"fpga\":{\"version\":\"" << (s[31] >> 16) << "." << (s[31] & 0xFFFF) << "\",\"spectrum\":"
-          << (has_cap ? "true" : "false") << "},";
+          << (has_cap ? "true" : "false") << ",\"constellation\":" << (has_const ? "true" : "false") << "},";
         j << "\"update_ms\":" << update_ms << ",";
         j << "\"uptime\":" << std::chrono::duration<double>(std::chrono::steady_clock::now() - S.t0).count() << ",";
         j << "\"config\":{\"tx_freq\":" << cfg.tx_freq << ",\"tx_bw\":" << cfg.tx_bw << ",\"tx_gain\":" << cfg.tx_gain
@@ -1416,6 +1468,10 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         sp.precision(10);
         sp << "{\"fc\":" << spec_fc << ",\"fs\":" << spec_fs << ",\"db\":[";
         for (size_t i = 0; i < spec_db.size(); i++) sp << (i ? "," : "") << std::round(spec_db[i] * 10) / 10;
+        sp << "],\"iq\":[";
+        for (size_t i = 0; i < const_x.size(); i++)
+            sp << (i ? "," : "") << std::round(double(const_x[i].real()) * 1000) / 1000 << ","
+               << std::round(double(const_x[i].imag()) * 1000) / 1000;
         sp << "]}";
         std::lock_guard<std::mutex> l(g_web.m);
         g_web.status_json   = j.str();
@@ -1528,6 +1584,7 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         t_poll = now;
         snap_on = S.rx_data;
         auto s = modem.status();
+        const_on = web && has_const && S.do_rx && ((s[0] >> 4) & 1);
         if (web) {
             update_web(s);
             update_ms = 1e3 * std::chrono::duration<double>(std::chrono::steady_clock::now() - now).count();

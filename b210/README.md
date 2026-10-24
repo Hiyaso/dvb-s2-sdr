@@ -25,7 +25,7 @@ B210 FPGA radio 0                               B210 FPGA radio 0
 | `build_fpga.sh` | 一鍵完成：抓和已安裝版本相同的 UHD 原始碼 → patch → 用 ISE 編譯 |
 | `host/dvbs2_b210.cpp` | PC 端程式（UHD C++），用 `host/build.sh` 編譯；`--web` 時內建網頁伺服器 |
 | `host/udp_frame.hpp` | UDP 封包在 DVB-S2 位元組串流裡的成框／還原（`--udp-in`／`--udp-out`） |
-| `host/web/index.html` | 網頁介面（解碼速率、SNR／RSSI／CFO、解碼速率圖、TX／RX 設定、頻譜、傳檔、基頻狀態） |
+| `host/web/index.html` | 網頁介面（解碼速率、SNR／RSSI／CFO、解碼速率圖、TX／RX 設定、頻譜、星座圖、傳檔、基頻狀態） |
 | `sim/reg_b210.sh`、`sim/tb_b210.v` | 模擬：兩台「B210」中間接通道模型，PRBS 和檔案傳輸兩種模式都測 |
 
 ## 需要的東西
@@ -161,7 +161,7 @@ cd b210/host/build
   切換一次會重新啟動串流（約 1–2 秒）。傳檔自測需要 TX 和 RX 都開啟。
 * 預設：`--mode trx`、TX／RX 頻率 **1 GHz**、頻寬 **2 MHz**（Rs = 1.4815 Msym/s，roll-off 0.35）、
   TX 增益 40 dB、RX 增益 40 dB、MODCOD 13（8PSK 2/3）、有導頻。命令列參數可以改預設值。
-* 網頁介面是英文，深色／淺色跟隨系統設定。版面（由上到下）：**RX Decode & RF Signal**（大字）→ 解碼速率圖 → TX／RX 設定 → 接收頻譜 → 傳檔 → **Baseband Modem Status**（小字）。
+* 網頁介面是英文，深色／淺色跟隨系統設定。版面（由上到下）：**RX Decode & RF Signal**（大字）→ 解碼速率圖 → TX／RX 設定 → 接收頻譜＋星座圖（並排） → 傳檔 → **Baseband Modem Status**（小字）。
   頁首顯示 FPGA 版本、TX 的 MODCOD／導頻／roll-off，右邊是連線狀態（Connected／Disconnected）和 RX 鎖定狀態
 * 網頁顯示：
   - **RX Decode & RF Signal**（最上面，大字方塊）：**解碼速率**（MODCOD 容量的 0–100 %，附長條；每 0.5 秒更新，下方小字是 Mbit/s、幀/秒和容量）、
@@ -185,18 +185,23 @@ cd b210/host/build
     - RSSI：AD9361 的 RSSI 讀值（dB，0.25 dB 一階，相對值，不是校正過的 dBm）
     - 訊號電平：DDC 輸出功率（dBFS，含雜訊）；高於 −3 dBFS 時標紅，表示接近飽和，請降 RX 增益
   - **TX 卡片**：頻率、頻寬、增益（可修改，按「Apply TX」生效）、符號率、取樣率／master clock、類比濾波器頻寬
-  - **RX 卡片**：頻率、頻寬、增益（可修改，按「Apply RX」）、符號率、類比濾波器頻寬
+  - **RX 卡片**：頻率、頻寬、增益（可修改，按「Apply RX」）、符號率、取樣率／master clock、類比濾波器頻寬
   - **Baseband Modem Status**（最下面，小字）：
     - TX：資料率、MODCOD 容量和使用率、資料來源（PRBS-23 或檔名）、已編碼／已送幀數、dummy 幀、欠載次數（DUC／USB）
     - RX：解碼速率和幀/秒、MODCOD 容量和使用率、狀態（鎖定／MODCOD／導頻／FLL 段）、幀數／漏幀／PLS 失敗、
       LDPC 迭代／丟棄、BCH 更正／失敗、BBFRAME 正確／CRC 錯誤、BER（PRBS 模式）、USB 溢位
   - **接收頻譜**（FPGA 抓 1024 個 DDC 取樣，PC 端加 Hann 窗做 FFT，dBFS，每次更新一筆、不做平均）：
     y 軸 0 到 −110 dBFS，x 軸是相對中心頻率的 MHz，黃色底色是 RX 設定的佔用頻寬。FPGA image 2.1 以前沒有頻譜
+  - **接收星座圖**（頻譜右邊）：FPGA 抓載波恢復、PL 解擾之後送進解映射器的資料符號（不含 PLHEADER、導頻），
+    讀回 512 點，半徑正規化為 1（±1.5 滿刻度），白圈是理想點（QPSK／8PSK 依 RX 解出的 MODCOD）。
+    下方顯示點數、MER 和 EVM（對最近理想點計算的 decision-directed 值；低 SNR 時符號判錯，MER 會比 Es/N0 略高）。
+    只在 RX 鎖定時更新，未鎖定或 1.5 秒沒有新資料時清空。需要 FPGA image 2.2 以上
   - **傳檔自測**：選一個檔案（例如 `.bin`）按「Send file」，檔案經過 TX → 空中／纜線 → RX 解調後存檔，
     網頁顯示進度、TX 送出／RX 寫入速率、預估剩餘時間、序號缺口和比對結果（大小、錯誤位元組），並提供下載；「Back to PRBS test」切回 BER 量測。
     送出和收到的檔案放在 `--file-dir`（預設 `dvbs2_files/`）。
 * 網頁每秒更新 10 次（狀態和頻譜）。PRBS 模式的頻譜直接用 RX 串流裡的 DDC 取樣計算；傳檔時串流裡是資料位元組，
   頻譜改從 FPGA 快照讀（每次 512 個 USB 暫存器讀取），約每秒 3 次，狀態仍是每秒 10 次。
+  星座圖兩種模式都從 FPGA 快照讀（每次 256 個 USB 暫存器讀取），PRBS 模式約每秒 10 次，傳檔時約每秒 2–3 次。
   `/api/status` 的 `update_ms` 是每次讀狀態所花的時間（約 10 ms）；資料率欄位（bit/s）：
   `tx.rate_bps`、`tx.capacity_bps`、`tx.host_bps`（主機送進 FPGA 的位元組速率）、
   `rx.rate_bps`、`rx.frames_per_s`、`rx.capacity_bps`、`rx.file_bps`（檔案寫入速率）、`rx.rate_interval`（實際計算區間，秒）、`rx.rate_time`（最近一次計算的時間，每 0.5 秒變一次）；
@@ -205,7 +210,7 @@ cd b210/host/build
 * 只聽 127.0.0.1；要從別台電腦開網頁加 `--web-bind 0.0.0.0`（沒有密碼，只在可信任的網路上用）。
 * 1 GHz 落在 960–1215 MHz 航空導航頻段，用天線時請把 TX 增益保持在低值，或改用纜線＋衰減器、
   或改到你有執照的頻率。
-* 網頁 API（也可以用 curl）：`GET /api/status`、`GET /api/spectrum`、
+* 網頁 API（也可以用 curl）：`GET /api/status`、`GET /api/spectrum`（`db` 頻譜、`iq` 星座點 [I0, Q0, I1, Q1, …]）、
   `POST /api/config`（表單欄位 `tx_freq`、`tx_bw`、`tx_gain`、`rx_freq`、`rx_bw`、`rx_gain`，單位 Hz／dB；
   `tx_on`、`rx_on` = 1／0 開關 TX、RX）、
   `POST /api/send?name=檔名`（內容是檔案本體，直接寫到磁碟，上限 2 GB；以 8PSK 2/3、2 MHz 約 300 kB/s 計，1 GB 要傳約 1 小時）、`POST /api/prbs`、`GET /api/received`。
@@ -220,7 +225,7 @@ cd b210/host/build
 | 1 | TXCFG | [4:0] MODCOD、[8] 導頻、[13:12] roll-off（TX 和 RX 共用） |
 | 2–6 | AGC / TIM / FS / FLL / FEC | 編碼和 `../z7020/doc/register_map.md` 的 0x030–0x040 相同 |
 | 7 | CLR | 任意寫入就清除統計 |
-| 8 | SNAP | 頻譜快照：寫入 [0]=1 開始抓 1024 個連續 DDC 取樣；[9:8] 選讀回的頁（每頁 256 個取樣） |
+| 8 | SNAP | 快照：寫入 [0]=1 開始抓，[1] 選來源：0 = 1024 個連續 DDC 取樣（頻譜）、1 = 1024 個載波恢復後的資料符號（星座圖，半徑 4096，只在鎖定時有）；[9:8] 選讀回的頁（每頁 256 個取樣） |
 
 狀態字 0–21 和 Z7020 版相同（`../z7020/doc/register_map.md` 0x080 起：鎖定、MODCOD、CFO、幀數、LDPC、BCH、BER、TX 計數等）。
 B210 專用的狀態字：
@@ -232,8 +237,8 @@ B210 專用的狀態字：
 | 25 | RX 送回主機的位元組數 |
 | 26 | DUC 欠載次數（沒有 DVB-S2 取樣可送） |
 | 27 / 28 | RX / TX 取樣數 |
-| 29 | [31] 快照完成、[30] 快照進行中、[29:0] CTRL 讀回 |
-| 30 / 31 | ID `0x44564232`（"DVB2"）/ 版本 `0x00020001`（2.1） |
+| 29 | [31] 快照完成、[30] 快照進行中、[29] 快照來源、[28:0] CTRL 讀回 |
+| 30 / 31 | ID `0x44564232`（"DVB2"）/ 版本 `0x00020002`（2.2） |
 
 快照讀回：`peek64(8*(128+w))`（讀回位址 [7]=1），w = 0…127，得到目前頁的第 2w 個（低 32 位元）和第 2w+1 個
 （高 32 位元）取樣，格式 `{I[31:16], Q[15:0]}`。

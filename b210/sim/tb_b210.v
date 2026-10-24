@@ -102,6 +102,26 @@ always @(posedge clk) begin
     end
 end
 
+// ---------------------------------------------------------------- constellation check
+// symbol {I, Q} (radius 4096): distance to the nearest ideal point, radius, power
+real    c_err, c_rad, c_mer;
+integer c_n, c_ok, c_m;
+task const_add(input [31:0] w);
+    real yi, yq, a, d, dm;
+    begin
+        yi = $itor($signed(w[31:16])); yq = $itor($signed(w[15:0]));
+        dm = 1.0e30;
+        for (c_m = 0; c_m < (MODCOD >= 12 ? 8 : 4); c_m = c_m + 1) begin
+            a = (MODCOD >= 12 ? c_m : 2 * c_m + 1) * 3.14159265358979 / 4.0;   // 8PSK k pi/4, QPSK (2k+1) pi/4
+            d = (yi - 4096.0 * $cos(a)) * (yi - 4096.0 * $cos(a)) + (yq - 4096.0 * $sin(a)) * (yq - 4096.0 * $sin(a));
+            if (d < dm) dm = d;
+        end
+        c_err = c_err + dm;
+        c_rad = c_rad + $sqrt(yi * yi + yq * yq);
+        c_n   = c_n + 1;
+    end
+endtask
+
 // ---------------------------------------------------------------- control + checks
 reg [31:0] ok0;
 integer i, nb, settle_bytes, cap_nz, cap_ok;
@@ -161,6 +181,23 @@ initial begin
         end
     end
     $display("spectrum snapshot: done=%0d, %0d of 1024 samples non-zero", cap_ok, cap_nz);
+    // constellation snapshot: 1024 data symbols after carrier recovery (register 8 bit 1)
+    wr_b(8'd8, 32'd3);
+    c_ok = 0; c_n = 0; c_err = 0.0; c_rad = 0.0;
+    for (i = 0; i < 100 && !c_ok; i = i + 1) begin
+        repeat (1024 * D / 2) @(posedge clk);
+        rd_b(8'd14); c_ok = rbv[63] && rbv[61];
+    end
+    for (i = 0; i < 4 && c_ok; i = i + 1) begin
+        wr_b(8'd8, i << 8);
+        for (k = 0; k < 128; k = k + 1) begin
+            rd_b(8'd128 + k[7:0]);
+            const_add(rbv[31:0]); const_add(rbv[63:32]);
+        end
+    end
+    c_mer = c_n ? 10.0 * $log10(c_n * 4096.0 * 4096.0 / c_err) : 0.0;
+    $display("constellation snapshot: done=%0d, %0d symbols, mean radius %0.0f, MER %0.1f dB", c_ok, c_n,
+             c_n ? c_rad / c_n : 0.0, c_mer);
     // payload check: align the first byte after settling with the sent sequence
     nerr = 0; nb = 0; base = -1;
     for (k = 0; k < nsent - 8 && base < 0; k = k + 1) begin
@@ -180,7 +217,9 @@ initial begin
         end
     end
     rd_b(8'd5);
-    if (cap_ok && cap_nz >= 1000 && rbv[31:0] >= NOK && rbv[63:32] == 0 && (DATA ? (base >= 0 && nerr == 0 && nb > 1000 && seq_err == 0) : 1)) begin
+    if (cap_ok && cap_nz >= 1000 && c_n == 1024 && c_rad / c_n > 3300.0 && c_rad / c_n < 5000.0
+        && c_mer > (MODCOD >= 12 ? 8.0 : 3.0)
+        && rbv[31:0] >= NOK && rbv[63:32] == 0 && (DATA ? (base >= 0 && nerr == 0 && nb > 1000 && seq_err == 0) : 1)) begin
         rd_b(8'd6); if (rbv[31:0] == 0) $display("PASS"); else $display("FAIL (bch failures)");
     end else $display("FAIL");
     $finish;

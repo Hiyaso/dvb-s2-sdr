@@ -71,7 +71,14 @@ XSA=$(ls "$PRJ"/*.sdk/system_top.xsa 2>/dev/null | head -1)
 cp "$BIT" "$OUT/system_top.bit"
 [ -f "$XSA" ] && cp "$XSA" "$OUT/system_top.xsa"
 grep -h -A3 "Design Timing Summary" "$PRJ"/*.runs/impl_1/*timing_summary_routed.rpt 2>/dev/null | head -8 || true
-[ -f "$PRJ/timing_impl.log" ] && { echo "!! timing not met:"; cat "$PRJ/timing_impl.log"; }
+# ADI's flow always writes timing_impl.log (report_timing_summary -warn_on_violation)
+if [ -f "$PRJ/timing_impl.log" ]; then
+  if grep -q "All user specified timing constraints are met" "$PRJ/timing_impl.log"; then
+    echo "timing met: $(awk '/Design Timing Summary/{f=1} f && /^ +-?[0-9]+\.[0-9]+ /{print "WNS " $1 " ns, WHS " $5 " ns"; exit}' "$PRJ/timing_impl.log")"
+  else
+    echo "!! timing not met:"; cat "$PRJ/timing_impl.log"
+  fi
+fi
 
 # ---- BOOT.BIN
 make_boot_bin "$OUT/system_top.bit" "$OUT/BOOT.BIN"

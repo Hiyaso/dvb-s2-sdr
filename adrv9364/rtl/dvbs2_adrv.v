@@ -15,6 +15,8 @@
 // Register map (byte offsets):
 //   0x000 + 4n  control register n (read/write), n = 0..8 as in b210/rtl/dvbs2_b210.v:
 //               0 CTRL, 1 TXCFG, 2 AGC, 3 TIM, 4 FS, 5 FLL, 6 FEC, 7 CLR (write 1), 8 CAP (write 1)
+//               CAP [0] = 1 starts a capture, [1] = source: 0 ADC samples (spectrum),
+//               1 data symbols after carrier recovery (constellation, radius 4096, only while locked)
 //   0x100 + 4k  status word k (k = 0..63, read only); 0..31 as on the B210, 32.. see below
 //   0x200       TXDATA  write: 4 payload bytes, bits [7:0] first
 //   0x204       RXLEN   read: pops the length of the next complete frame in the RX FIFO
@@ -22,7 +24,8 @@
 //   0x208       RXDATA  read: pops one word (4 bytes, bits [7:0] first; the last word of a
 //                       frame holds 1..4 bytes)
 //   0x20C       LEVELS  {TX FIFO free words, RX FIFO used words} (16 kB each)
-//   0x1000 + 4i spectrum snapshot sample i (i = 0..1023) {I, Q}
+//   0x1000 + 4i snapshot sample / symbol i (i = 0..1023) {I, Q}; status word 29:
+//               [31] done, [30] busy, [29] source of the capture
 `timescale 1ns/1ps
 module dvbs2_adrv #(
     parameter LDPC_P = 45
@@ -70,7 +73,7 @@ module dvbs2_adrv #(
     output wire [15:0] dac_data_q
 );
 localparam [31:0] ID      = 32'h44564232;   // "DVB2"
-localparam [31:0] VERSION = 32'h00030000;   // 3.0 (ADRV9364-Z7020, AXI-Lite)
+localparam [31:0] VERSION = 32'h00030001;   // 3.1 (ADRV9364-Z7020, AXI-Lite, constellation snapshot)
 
 assign s_axi_bresp = 2'b00;
 assign s_axi_rresp = 2'b00;
@@ -87,7 +90,7 @@ localparam [31:0] D_FS    = {8'd32, 8'd2, 8'd90, 8'd141};
 localparam [31:0] D_FLL   = {12'd0, 4'd12, 4'd6, 4'd1, 4'd1, 4'd1};
 localparam [31:0] D_FEC   = {5'd0, 3'd0, 2'd0, 6'd25, 8'd16, 8'd24};
 reg [31:0] r_ctrl, r_txcfg, r_agc, r_tim, r_fs, r_fll, r_fec;
-reg        clr, cap_start;
+reg        clr, cap_start, cap_src;
 
 // AXI write channel: address and data may arrive in any order
 reg [15:0] awaddr;
@@ -101,6 +104,7 @@ always @(posedge clk) begin
         aw_ok <= 1'b0; w_ok <= 1'b0; awaddr <= 16'd0; wdata <= 32'd0;
         r_ctrl <= D_CTRL; r_txcfg <= D_TXCFG; r_agc <= D_AGC; r_tim <= D_TIM;
         r_fs <= D_FS; r_fll <= D_FLL; r_fec <= D_FEC; clr <= 1'b0; cap_start <= 1'b0;
+        cap_src <= 1'b0;
     end else begin
         clr <= 1'b0;
         cap_start <= 1'b0;
@@ -122,7 +126,7 @@ always @(posedge clk) begin
                 4'd5: r_fll   <= wdata;
                 4'd6: r_fec   <= wdata;
                 4'd7: clr     <= wdata[0];
-                4'd8: cap_start <= wdata[0];
+                4'd8: begin cap_start <= wdata[0]; if (wdata[0]) cap_src <= wdata[1]; end
                 default: ;
             endcase
             s_axi_bvalid <= 1'b1;
@@ -258,6 +262,7 @@ wire [3:0]  st_fs; wire st_lock, st_berlock, st_povf; wire [4:0] st_mc; wire [1:
 wire signed [31:0] st_om;
 wire [31:0] st_frames, st_miss, st_plsf, st_dec, st_drop, st_bcor, st_bfail, st_ok, st_crc, st_bbf, st_berr;
 wire [5:0]  st_iters; wire [7:0] st_mat; wire [47:0] st_bbits;
+wire        sym_v; wire [15:0] sym_i, sym_q;
 dvbs2_rx #(.P(LDPC_P)) u_rx (
     .clk(clk), .rst(rst_rx), .rolloff(r_txcfg[13:12]),
     .agc_en(agc_en), .agc_target(r_agc[15:0]), .agc_mu(r_agc[19:16]),
@@ -274,7 +279,8 @@ dvbs2_rx #(.P(LDPC_P)) u_rx (
     .st_fll_stage(st_stage), .st_sym_gain(st_sgain), .st_plsq(st_plsq), .st_ldpc_dec(st_dec),
     .st_ldpc_drop(st_drop), .st_ldpc_iters(st_iters), .st_bch_corr(st_bcor), .st_bch_fail(st_bfail),
     .st_bb_ok(st_ok), .st_bb_crc(st_crc), .st_bb_bchfail(st_bbf), .st_dfl(st_dfl), .st_matype(st_mat),
-    .st_ber_bits(st_bbits), .st_ber_errors(st_berr), .st_ber_lock(st_berlock), .st_pacer_ovf(st_povf));
+    .st_ber_bits(st_bbits), .st_ber_errors(st_berr), .st_ber_lock(st_berlock), .st_pacer_ovf(st_povf),
+    .sym_valid(sym_v), .sym_i(sym_i), .sym_q(sym_q));
 
 // ---------------------------------------------------------------- RX payload (modem -> ARM)
 // bytes packed into words (bits [7:0] first); the length of each frame goes to a second
@@ -323,8 +329,10 @@ adrv_fifo #(.W(16), .AW(4)) u_rxl (
     .clk(clk), .rst(rst_rx), .wr(rxl_wr), .din(rxl_din), .full(rxl_full),
     .rd(rd_rxlen), .dout(rxl_dout), .empty(rxl_empty), .count(rxl_count));
 
-// ---------------------------------------------------------------- spectrum snapshot
-// 1024 consecutive ADC samples (as given to the modem), read at 0x1000 + 4 i
+// ---------------------------------------------------------------- snapshot (spectrum / constellation)
+// 1024 consecutive ADC samples (as given to the modem) or data symbols, read at 0x1000 + 4 i
+wire        cap_v = cap_src ? sym_v : r_valid;
+wire [31:0] cap_d = cap_src ? {sym_i, sym_q} : r_sample;
 reg        cap_busy, cap_done;
 reg [9:0]  cap_cnt;
 wire [31:0] cap_q;
@@ -334,13 +342,13 @@ always @(posedge clk) begin
         cap_busy <= 1'b0; cap_done <= 1'b0; cap_cnt <= 10'd0;
     end else if (cap_start) begin
         cap_busy <= 1'b1; cap_done <= 1'b0; cap_cnt <= 10'd0;
-    end else if (cap_busy && r_valid) begin
+    end else if (cap_busy && cap_v) begin
         cap_cnt <= cap_cnt + 10'd1;
         if (cap_cnt == 10'd1023) begin cap_busy <= 1'b0; cap_done <= 1'b1; end
     end
 end
 ram_sdp #(.DW(32), .AW(10)) u_capram (
-    .clk(clk), .we(cap_busy && r_valid), .waddr(cap_cnt), .wdata(r_sample),
+    .clk(clk), .we(cap_busy && cap_v), .waddr(cap_cnt), .wdata(cap_d),
     .re(1'b1), .raddr(cap_raddr), .rdata(cap_q));
 
 // ---------------------------------------------------------------- event counters
@@ -403,7 +411,7 @@ assign status[25*32 +: 32] = c_rxbytes;
 assign status[26*32 +: 32] = c_dacuf;
 assign status[27*32 +: 32] = c_rxsamp;
 assign status[28*32 +: 32] = c_txsamp;
-assign status[29*32 +: 32] = {cap_done, cap_busy, r_ctrl[29:0]};
+assign status[29*32 +: 32] = {cap_done, cap_busy, cap_src, r_ctrl[28:0]};
 assign status[30*32 +: 32] = ID;
 assign status[31*32 +: 32] = VERSION;
 assign status[32*32 +: 32] = c_adcovf;

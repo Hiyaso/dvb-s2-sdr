@@ -38,14 +38,14 @@ PC A ──UDP→ :5000 ──▶ [SOM 1] DVB-S2 TX ─▶ AD9364 ~~~ RF ~~~ AD9
 
 | 檔案 | 內容 |
 |---|---|
-| `rtl/dvbs2_adrv.v` | PL 外殼：AXI-Lite 暫存器（0x44A00000）、TX／RX 酬載 FIFO（各 16 kB）、跨時脈 FIFO、頻譜擷取 |
+| `rtl/dvbs2_adrv.v` | PL 外殼：AXI-Lite 暫存器（0x44A00000）、TX／RX 酬載 FIFO（各 16 kB）、跨時脈 FIFO、頻譜／星座圖擷取 |
 | `rtl/adrv_afifo.v`、`rtl/adrv_fifo.v` | 非同步（gray code）／同步 FIFO |
 | `hdl/` | Vivado 專案（複製進 ADI HDL `projects/adrv9364z7020/dvbs2/`）：block design、SOM-only 頂層、CDC／multicycle 約束 |
 | `build_fpga.sh` | 一鍵：抓 ADI HDL（hdl_2026_r1）→ 建專案 → Vivado 合成／實作 → BOOT.BIN |
 | `make_sd_image.sh` | 一鍵：Kuiper Linux 2026.1.0 image ＋ BOOT.BIN ＋ `dvbs2_adrv` 服務 ＋ 固定 IP → `.img` |
 | `lib.sh` | 上面兩個腳本共用：下載 Kuiper、工具（mtools、ARM 編譯器、bootgen）、BOOT.BIN |
 | `sw/dvbs2_adrv.cpp` | SOM 上的程式：/dev/mem 控制數據機、sysfs＋libad9361 設 AD9364、UDP、網頁、檔案傳輸 |
-| `sw/web/index.html` | 網頁介面（解碼速率、SNR／RSSI／CFO、頻譜、RF 與數據機設定、PRBS／UDP 模式、儲存設定、傳檔） |
+| `sw/web/index.html` | 網頁介面（解碼速率、SNR／RSSI／CFO、頻譜＋星座圖、RF 與數據機設定、PRBS／UDP 模式、儲存設定、傳檔） |
 | `sw/build.sh`、`sw/test_mock.sh` | 交叉編譯；PC 上用軟體 FPGA 模型測 UDP 和網頁 API |
 | `rootfs/` | 放進 image 的 `dvbs2.service`、`/etc/dvbs2.conf` 範本 |
 | `sim/tb_adrv.v`、`sim/reg_adrv.sh` | 模擬：兩塊 SOM（各自的取樣時脈、12 位元 DAC／ADC）＋通道模型，酬載走 AXI-Lite |
@@ -161,7 +161,7 @@ udp-out = 192.168.30.255:5001
 1. 先用 `STOCK=1` 的 image 確認載板：UART 看到 Linux 開機到登入提示、`ping 192.168.30.1` 有回應、
    `ssh analog@192.168.30.1` 能登入、`iio_info | grep ad9361-phy` 有 AD9364。
    （這個 image 沒有數據機，`systemctl status dvbs2` 會一直顯示 "DVB-S2 modem not found"，是正常的。）
-2. 換成 `dvbs2-adrv9364.img`：`journalctl -u dvbs2` 應該有 "DVB-S2 modem found, version 3.0"，網頁打得開。
+2. 換成 `dvbs2-adrv9364.img`：`journalctl -u dvbs2` 應該有 "DVB-S2 modem found, version 3.1"，網頁打得開。
 3. TX 接 RX（線＋30 dB 以上衰減），網頁上 RX 應該 Locked、PRBS BER 為 0；再試 UDP 和傳檔。
 
 | 現象 | 可能原因 |
@@ -190,12 +190,13 @@ Kuiper 的 devicetree 把 0x43C00000 留給 MathWorks IP，所以數據機放在
 | 位址 | 內容 |
 |---|---|
 | 0x000 + 4n | 控制暫存器 n（和 B210 相同：0 CTRL、1 TXCFG、2 AGC、3 TIM、4 FS、5 FLL、6 FEC、7 CLR、8 CAP） |
-| 0x100 + 4k | 狀態字 k（0–31 和 B210 相同；32 ADC overflow、33 給 ARM 的幀數、34 等待中的幀、35 TX 取樣 FIFO） |
+| 0x020 | CAP：寫 [0]=1 開始擷取，[1] 來源：0 = ADC 取樣（頻譜）、1 = 載波恢復後的資料符號（星座圖，半徑 4096，只在鎖定時有） |
+| 0x100 + 4k | 狀態字 k（0–31 和 B210 相同，29 = [31] 擷取完成、[30] 擷取中、[29] 來源；32 ADC overflow、33 給 ARM 的幀數、34 等待中的幀、35 TX 取樣 FIFO） |
 | 0x200 | TXDATA：寫 4 個酬載位元組（[7:0] 先送） |
 | 0x204 | RXLEN：讀出下一個完整幀的長度 {1, 0…, bytes}，0 = 沒有 |
 | 0x208 | RXDATA：讀 4 個位元組（幀的最後一個字有 1–4 個） |
 | 0x20C | {TX FIFO 剩餘字數, RX FIFO 已用字數} |
-| 0x1000 + 4i | 頻譜擷取：1024 個 ADC 取樣 {I, Q} |
+| 0x1000 + 4i | 擷取結果：1024 個 ADC 取樣或資料符號 {I, Q} |
 
 TX 啟用時 `axi_ad9361` DAC 通道的資料來源要選 DMA（0x79024418／0x79024458 = 2），程式會自己設。
 

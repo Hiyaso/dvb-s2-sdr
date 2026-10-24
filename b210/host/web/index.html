@@ -93,8 +93,12 @@ details.tbl th { color: var(--muted); font-weight: 600; }
 .bbcols .off dl { opacity: .45; }
 .result.ok { color: var(--ok); font-weight: 650; }
 .result.bad { color: var(--bad); font-weight: 650; }
+.specrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; }
+#const { width: 300px; height: 300px; margin: 0 auto; }
+.const-info { margin-top: 6px; width: 300px; max-width: 100%; font-variant-numeric: tabular-nums; }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } .form { grid-template-columns: 1fr 1fr; }
-                            .bbcols { grid-template-columns: 1fr; } .tiles { grid-template-columns: 1fr 1fr; } }
+                            .bbcols { grid-template-columns: 1fr; } .tiles { grid-template-columns: 1fr 1fr; }
+                            .specrow { grid-template-columns: 1fr; } .const-info { margin: 6px auto 0; } }
 </style>
 </head>
 <body>
@@ -144,10 +148,17 @@ details.tbl th { color: var(--muted); font-weight: 600; }
     <dl id="rx_rf"></dl>
   </section>
 
-  <section class="card wide">
-    <h2>RX Spectrum <span class="hint" id="spec_info"></span></h2>
-    <canvas id="spec"></canvas>
-  </section>
+  <div class="wide specrow">
+    <section class="card">
+      <h2>RX Spectrum <span class="hint" id="spec_info"></span></h2>
+      <canvas id="spec"></canvas>
+    </section>
+    <section class="card">
+      <h2>RX Constellation</h2>
+      <canvas id="const" role="img" aria-label="Received data symbols after carrier recovery"></canvas>
+      <div class="hint const-info" id="const_info"></div>
+    </section>
+  </div>
 
   <section class="card wide">
     <h2>File Loopback Test</h2>
@@ -326,6 +337,7 @@ function render(s) {
   stat('rx_rf', [
     ['Center frequency', mhz(rx.freq, 6)],
     ['Symbol rate', fmt(rx.rs / 1e3, 1) + ' ksym/s'],
+    ['Sample rate / master clock', fmt(rx.fs / 1e6, 4) + ' / ' + fmt(tx.mcr / 1e6, 3) + ' MHz'],
     ['Analog filter bandwidth', mhz(rx.analog_bw, 3)],
     ['Gain', fmt(rx.gain, 1) + ' dB'],
   ]);
@@ -418,6 +430,51 @@ function drawSpectrum(sp) {
   g.lineTo(L + pw, T + ph); g.lineTo(L, T + ph); g.closePath();
   g.fillStyle = css.getPropertyValue('--plot-fill'); g.fill();
   $('spec_info').textContent = `Center ${(sp.fc / 1e6).toFixed(3)} MHz · span ${(span / 1e6).toFixed(3)} MHz · dBFS (x axis: MHz from center)`;
+}
+
+// ---- RX constellation: data symbols after carrier recovery (radius 1), I/Q in sp.iq
+function drawConstellation(sp) {
+  const cv = $('const'), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement);
+  g.fillStyle = css.getPropertyValue('--plot-bg'); g.fillRect(0, 0, W, H);
+  const S = Math.min(W, H), cx = W / 2, cy = H / 2, k = (S / 2 - 8) / 1.5;   // +-1.5 full scale
+  g.strokeStyle = css.getPropertyValue('--plot-grid'); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(cx - 1.5 * k, cy); g.lineTo(cx + 1.5 * k, cy); g.moveTo(cx, cy - 1.5 * k); g.lineTo(cx, cy + 1.5 * k); g.stroke();
+  g.beginPath(); g.arc(cx, cy, k, 0, 2 * Math.PI); g.stroke();
+  g.fillStyle = '#8b949e'; g.font = '11px system-ui'; g.textAlign = 'left'; g.textBaseline = 'bottom';
+  g.fillText('I', cx + 1.5 * k - 8, cy - 3); g.textBaseline = 'top'; g.fillText('Q', cx + 4, cy - 1.5 * k);
+  const iq = sp.iq || [], n = iq.length / 2;
+  const rx = last && last.rx;
+  if (!n) {
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(rx && !rx.on ? 'RX is off' : last && !last.fpga.constellation ? 'Needs FPGA image 2.2 or later'
+               : rx && !rx.lock ? 'RX not locked' : 'Waiting for symbols…', cx, cy + 0.5 * k);
+    $('const_info').textContent = '';
+    return;
+  }
+  // ideal points: QPSK (2m+1) pi/4, 8PSK m pi/4 (EN 302 307-1 Fig. 9, 10)
+  const psk8 = rx && rx.modcod.startsWith('8PSK'), M = psk8 ? 8 : 4;
+  const ref = [];
+  for (let m = 0; m < M; m++) { const a = (psk8 ? m : 2 * m + 1) * Math.PI / 4; ref.push([Math.cos(a), Math.sin(a)]); }
+  // decision-directed MER: error to the nearest ideal point
+  let err = 0;
+  g.fillStyle = 'rgba(88,166,255,.55)';
+  for (let i = 0; i < n; i++) {
+    const x = iq[2 * i], y = iq[2 * i + 1];
+    let dm = 1e9;
+    for (const [rx_i, rx_q] of ref) dm = Math.min(dm, (x - rx_i) ** 2 + (y - rx_q) ** 2);
+    err += dm;
+    const px = cx + Math.max(-1.5, Math.min(1.5, x)) * k, py = cy - Math.max(-1.5, Math.min(1.5, y)) * k;
+    g.fillRect(px - 1, py - 1, 2, 2);
+  }
+  g.strokeStyle = '#e6edf3'; g.lineWidth = 1.2;
+  for (const [x, y] of ref) { g.beginPath(); g.arc(cx + x * k, cy - y * k, 4, 0, 2 * Math.PI); g.stroke(); }
+  const mer = 10 * Math.log10(n / Math.max(err, 1e-9)), evm = 100 * Math.sqrt(err / n);
+  $('const_info').textContent = `${n} symbols · MER ${fmt(mer, 1)} dB · EVM ${fmt(evm, 1)} %`;
 }
 
 // ---- RX decode-rate history: one point per 0.5 s server interval (rx.rate_time changes)
@@ -584,6 +641,7 @@ async function poll() {
     const [s, sp] = await Promise.all([fetch('/api/status').then(r => r.json()), fetch('/api/spectrum').then(r => r.json())]);
     if (s.tx) { last = s; render(s); }
     drawSpectrum(sp);
+    drawConstellation(sp);
     $('conn').textContent = 'Connected'; $('conn').className = 'pill ok';
   } catch (e) {
     $('conn').textContent = 'Disconnected'; $('conn').className = 'pill bad';

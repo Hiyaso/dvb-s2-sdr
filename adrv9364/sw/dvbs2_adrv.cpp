@@ -2,12 +2,13 @@
 // dvbs2_adrv -- ARM (Linux) side of the DVB-S2 modem in the ADRV9364-Z7020 FPGA.
 //
 //   * modem registers and payload FIFOs over AXI-Lite (/dev/mem, 0x44A00000, see
-//     adrv9364/rtl/dvbs2_adrv.v); spectrum from the FPGA snapshot (1024 ADC samples)
+//     adrv9364/rtl/dvbs2_adrv.v); spectrum from the FPGA snapshot (1024 ADC samples),
+//     constellation from the same snapshot RAM (1024 data symbols after carrier recovery)
 //   * AD9364 (ad9361-phy, sysfs + libad9361 for the sample rate): LO frequencies, gains,
 //     analog bandwidth; one sample rate for TX and RX = 2 x symbol rate
 //   * TX payload: PRBS-23 (FPGA), a file / stdin, or UDP datagrams (--udp-in, framed as in
 //     udp_frame.hpp); RX payload: PRBS BER check, a file / stdout, or UDP (--udp-out)
-//   * --web PORT: web page (status, spectrum, RF and modem settings, PRBS / UDP mode,
+//   * --web PORT: web page (status, spectrum, constellation, RF and modem settings, PRBS / UDP mode,
 //     file loopback), settings can be saved to the configuration file
 //
 // Runs on the SOM (Kuiper Linux, as root).  Options come from the command line and
@@ -156,7 +157,7 @@ struct Modem {
         s[10] = s[18] = frames;
         s[13] = (txcfg & 31) ? 0 : 0;
         s[30] = MODEM_ID;
-        s[31] = 0x00030000;
+        s[31] = 0x00030001;
         s[29] = 1u << 31;
         return s;
     }
@@ -194,6 +195,17 @@ struct Modem {
         for (auto& v : x) v = std::complex<float>(float(rand() % 2001 - 1000), float(rand() % 2001 - 1000));
         return x;
     }
+    std::vector<std::complex<float>> constellation()
+    {
+        const bool psk8 = (txcfg & 31) >= 12;
+        std::vector<std::complex<float>> x(CAP_N);
+        for (auto& v : x) {
+            const double a = psk8 ? (rand() % 8) * M_PI / 4 : (2 * (rand() % 4) + 1) * M_PI / 4;
+            v = std::complex<float>(float(std::cos(a) + (rand() % 201 - 100) / 1000.0),
+                float(std::sin(a) + (rand() % 201 - 100) / 1000.0));
+        }
+        return x;
+    }
 };
 #else
 struct Modem {
@@ -225,6 +237,26 @@ struct Modem {
         for (int i = 0; i < CAP_N; i++) {
             uint32_t s = m.rd(0x1000 + 4 * i);
             x.emplace_back(float(int16_t(s >> 16)), float(int16_t(s & 0xFFFF)));
+        }
+        return x;
+    }
+    // 1024 data symbols after carrier recovery (version >= 3.1), scaled to radius 1; empty if the
+    // capture did not finish (receiver not locked, only dummy frames)
+    std::vector<std::complex<float>> constellation()
+    {
+        std::vector<std::complex<float>> x;
+        wr(REG_CAP, 3);
+        bool done = false;
+        for (int t = 0; t < 100 && !done; t++) {
+            const uint32_t w29 = m.rd(0x100 + 4 * 29);
+            done = (w29 >> 31) & (w29 >> 29) & 1;              // done, source = symbols
+            if (!done) std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+        if (!done) return x;
+        x.reserve(CAP_N);
+        for (int i = 0; i < CAP_N; i++) {
+            uint32_t s = m.rd(0x1000 + 4 * i);
+            x.emplace_back(float(int16_t(s >> 16)) / 4096.0f, float(int16_t(s & 0xFFFF)) / 4096.0f);
         }
         return x;
     }
@@ -1246,6 +1278,8 @@ try {
         return EXIT_FAILURE;
     }
     fprintf(g_log, "DVB-S2 modem found, version %u.%u\n", s0[31] >> 16, s0[31] & 0xFFFF);
+    const bool has_const = (s0[31] & 0xFFFF) >= 1;   // version 3.1: constellation snapshot
+    if (!has_const) fprintf(g_log, "note: this FPGA image has no constellation snapshot (version < 3.1)\n");
     Phy phy;
     for (int t = 0; t < 60 && !phy.find(); t++) std::this_thread::sleep_for(std::chrono::milliseconds(500));
     if (phy.dir.empty()) throw std::runtime_error("ad9361-phy not found in /sys/bus/iio/devices");
@@ -1396,9 +1430,10 @@ try {
         S.result = e.what();
     }
 
-    // ---- web status / spectrum
+    // ---- web status / spectrum / constellation
     std::vector<float> spec_db;
     double spec_fs = 0, spec_fc = 0;
+    std::vector<std::complex<float>> const_x;  // latest constellation (radius 1), while RX is locked
     const double RATE_INTERVAL = 0.5;
     struct RateSample {
         double t;
@@ -1434,6 +1469,8 @@ try {
             }
             rssi_db = phy.num("in_voltage0_rssi");          // dB, relative (not dBm)
         }
+        const_x.clear();
+        if (S.do_rx && has_const && ((s[0] >> 4) & 1)) const_x = modem.constellation();
         const uint32_t w0   = s[0];
         const bool lock     = (w0 >> 4) & 1;
         const int mc        = (w0 >> 5) & 31;
@@ -1469,7 +1506,7 @@ try {
         std::ostringstream j;
         j.precision(10);
         j << "{\"board\":\"ADRV9364-Z7020\",\"fpga\":{\"version\":\"" << (s[31] >> 16) << "." << (s[31] & 0xFFFF)
-          << "\",\"spectrum\":true},";
+          << "\",\"spectrum\":true,\"constellation\":" << (has_const ? "true" : "false") << "},";
         j << "\"update_ms\":" << update_ms << ",";
         j << "\"uptime\":" << std::chrono::duration<double>(std::chrono::steady_clock::now() - S.t0).count() << ",";
         j << "\"config\":{\"tx_freq\":" << cfg.tx_freq << ",\"tx_bw\":" << cfg.bw << ",\"tx_gain\":" << cfg.tx_gain
@@ -1512,6 +1549,10 @@ try {
         sp.precision(10);
         sp << "{\"fc\":" << spec_fc << ",\"fs\":" << spec_fs << ",\"db\":[";
         for (size_t i = 0; i < spec_db.size(); i++) sp << (i ? "," : "") << std::round(spec_db[i] * 10) / 10;
+        sp << "],\"iq\":[";
+        for (size_t i = 0; i < const_x.size(); i++)
+            sp << (i ? "," : "") << std::round(double(const_x[i].real()) * 1000) / 1000 << ","
+               << std::round(double(const_x[i].imag()) * 1000) / 1000;
         sp << "]}";
         std::lock_guard<std::mutex> l(g_web.m);
         g_web.status_json   = j.str();

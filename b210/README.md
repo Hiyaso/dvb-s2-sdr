@@ -33,7 +33,9 @@ B210 FPGA radio 0                               B210 FPGA radio 0
 * Ubuntu 22.04 或 24.04，UHD 4.1 以上（`sudo apt install libuhd-dev uhd-host`，
   再執行一次 `sudo uhd_images_downloader` 安裝原廠 image）。
 * **編譯 FPGA 需要 Xilinx ISE 14.7（Linux 版）**：Vivado 不支援 Spartan-6。
-  B210 的 XC6SLX150 不在免費 WebPACK 的支援範圍，需要涵蓋 LX150 的授權（例如 ISE Embedded / Design Edition）。
+  B210 的 XC6SLX150 不在免費 WebPACK 的支援範圍，需要涵蓋 LX150 的授權。AMD 現在對所有註冊用戶免費發
+  **ISE Design Suite: Embedded Edition** 的 node-locked 授權：登入 <https://www.xilinx.com/getlicense> → Create New Licenses →
+  選含「ISE」和「Embedded Edition」的項目 → Host ID 填網卡 MAC（12 個十六進位字，不加冒號）→ 產生，`Xilinx.lic` 會寄到信箱。
   授權檔放在 `~/.Xilinx/`，`build_fpga.sh` 會自動讀取該目錄下所有 `*.lic`。
   只有負責編譯 FPGA 的那台機器需要 ISE，兩台測試 PC 只要拿到編好的 `.bin` 就好。
 * **ISE 的授權只認網卡 `eth0` 的 MAC**。新版 Ubuntu 的網卡名稱是 `ens33`、`enp…`，沒有 `eth0` 時
@@ -57,9 +59,8 @@ ISE_SETTINGS=/opt/Xilinx/14.7/ISE_DS/settings64.sh ./build_fpga.sh
 
 * 這個 image **只有一組 radio（radio 0：TX/RX A、RX2 A）**：DVB-S2 數據機佔掉了原本 radio 1 的空間，
   B 通道不能用。原廠 image 的雙通道功能不受影響（換回原廠 image 即可）。
-* 整個 image：54.7k LUT（59%）、occupied slice 79%、238 個 RAMB16（88%）、156 個 DSP48A1（86%）；
-  ISE 14.7 完整編譯約 1 小時（XST 佔大部分，PAR 約 8 分鐘），時序全部通過。
-  （這是 RX 定時恢復／AGC 多加一級管線之前的數字；新的 RTL 多約 100 個暫存器，`reg_b210` 通過，ISE 還沒重編。）
+* 整個 image（目前的 RTL，UHD 4.9.0.0 原始碼，2026-10 重編）：55.0k LUT（59%）、occupied slice 80%、
+  238 個 RAMB16（88%）、156 個 DSP48A1（86%）；ISE 14.7 完整編譯約 45 分鐘（XST 佔大部分，PAR 約 8 分鐘），時序全部通過。
 
 也可以手動做：`python3 patch_uhd_fpga.py ~/uhd` → `cd ~/uhd/fpga/usrp3/top/b200 && make B210_DVBS2`。
 patch 可以重複執行，原始檔會保留成 `*.orig`。
@@ -143,6 +144,7 @@ RX LOCK 8PSK 2/3 pil FLL3 CFO   +2315.4 Hz | frames 812 miss 0 | LDPC it  6 drop
 | `--ref internal/external/gpsdo` | 時脈參考。符號率很低時，兩台的 REF IN 接同一個 10 MHz 並加 `--ref external` |
 | `--preamble 1.0` | 傳檔前的填充秒數（RX 鎖定時間） |
 | `--tx-gain` / `--rx-gain` | AD9361 的增益；RX AGC 在 FPGA 裡面做 |
+| `--status-udp [addr:]port` | 任何模式都能用：每秒把和網頁 `/api/status` 相同的狀態 JSON、以及和 `/api/spectrum` 相同的頻譜 JSON（FPGA 快照，1024 點）各送一個 UDP 封包到該位址，給外部程式（例如 fieldlink）顯示鎖定、Es/N0、頻譜 |
 | `--args serial=...` | 接了多台 B210 時用來指定。程式預設加上 `recv_frame_size=16360,send_frame_size=16360`（USB 封包最大，PC CPU 用量約減半），`--args` 裡自己給就以你的為準 |
 
 酬載容量（以 1 Msym/s、有導頻為例）：QPSK 1/2 約 104 kB/s，8PSK 2/3 約 236 kB/s，8PSK 8/9 約 316 kB/s，
@@ -246,14 +248,23 @@ B210 專用的狀態字：
   - QPSK 1/2、4 dB、PRBS 模式：8 幀、0 位元錯誤
   - QPSK 1/2、檔案模式、資料量低於幀容量（data 幀之間夾 dummy 幀）：0 錯誤
 * B210 版專用的寫法（摺疊式 FIR、Spartan-6 byte-write RAM）重跑過 LDPC、TX 和系統回歸，和 Z7020 版位元精確一致。
-* patch 套用到 UHD v4.1.0.5、v4.6.0.0、v4.8.0.0、v4.11.0.0 和 master 都成功；patch 後的 `radio_legacy` 能完整 elaborate
+* patch 套用到 UHD v4.1.0.5、v4.6.0.0、v4.8.0.0、v4.9.0.0、v4.11.0.0 和 master 都成功；patch 後的 `radio_legacy` 能完整 elaborate
   （只缺 Xilinx primitive 和 coregen）。PC 程式在 UHD 4.6 和 4.11 下編譯成功。
-* **ISE 14.7 編譯**（UHD 4.11.0.0 原始碼）：繞線完成、所有時序條件通過（radio clock 以 61.44 MHz 檢查）。
+* **ISE 14.7 編譯**：UHD 4.11.0.0 原始碼（最初的 RTL）和 UHD 4.9.0.0 原始碼（目前的 RTL，含 RX 定時恢復／AGC 的額外管線）都繞線完成、
+  所有時序條件通過（radio clock 以 61.44 MHz 檢查）；4.9 版 image 在 NI USRP-2901（B210）上以網頁模式自收自發（1 GHz、2 MHz、8PSK 2/3、
+  增益 40／40 dB）：鎖定、Es/N0 約 16.4 dB、解碼率 100 %、PRBS 1.3 億位元 0 錯誤、沒有漏幀。
 * **實機（一台 B210、網頁模式、天線、1 GHz、2 MHz、TX/RX 增益 40 dB）**：
   - 8PSK 2/3 有導頻：鎖定，PRBS 3.7 億位元 0 錯誤，LDPC 平均 1 次迭代，沒有漏幀
   - 網頁修改增益、頻寬（2 → 1 MHz）、頻率後都能重新鎖定；RX 頻率偏 5 kHz 時 CFO 顯示 −5000.0 Hz
   - 300 kB 隨機檔案經空中回環：收到的檔案和原檔 SHA-256 相同
   - 頻譜：訊號帶內約 −46 dBFS，帶外雜訊底約 −91 dBFS
+* **兩台實機對傳（2026-10，Jetson Orin Nano＋NI USRP-2901 ↔ 筆電＋NI USRP-2901，天線，同一房間）**：
+  - 兩台之間 TX 增益 40 dB 完全收不到（對方底噪 −99 dBFS 沒有任何變化），**TX 增益 70 dB** 才夠：Nano→筆電 Es/N0 約 13.5 dB、
+    電平 −35 dBFS、2 億位元 0 錯誤、0 漏幀；兩台自由振盪的頻偏約 ±1.9 kHz，RX 自動追到
+  - 單向 UDP（Nano→筆電）：3000 個 20–1400 B 封包、150 包/秒，全收到、0 遺失、0 損壞
+  - **全雙工**（兩邊 `--mode trx --udp-in --udp-out`，Nano TX 1000 MHz／筆電 TX 1050 MHz）：自己的 TX 開著會讓本機 RX 的 Es/N0 掉約 1.5–2 dB，
+    其中一個方向原本只有 9 dB 餘裕不足（8PSK 2/3 全部解不出）；把那個方向改成 QPSK 1/2、TX 增益 80 dB 後兩個方向同時傳
+    3000＋2000 個封包全收到、0 遺失、0 損壞（LDPC 1–2 次迭代）。建議兩個方向各自選 MODCOD：資料量大的方向用 8PSK 2/3，指令方向用 QPSK 1/2
 * **實機 UDP（一台 B210、`--mode trx`、天線、1 GHz、2 MHz、8PSK 2/3、TX/RX 增益 40 dB）**：
   - 200 包/秒、0–9000 B 隨機長度（約 215 kB/s）：3000 包全收到、內容正確，延遲中位數 51 ms、p99 109 ms
   - `num_send_frames=4,send_frame_size=4096`：50 包/秒延遲中位數 23 ms；450 包/秒（超過容量）丟 232／4000 包、

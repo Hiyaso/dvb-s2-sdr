@@ -1006,7 +1006,7 @@ static Actual apply_rf(uhd::usrp::multi_usrp::sptr usrp, const Config& c, bool d
 
 int UHD_SAFE_MAIN(int argc, char* argv[])
 {
-    std::string args, fpga, mode, input, output, udp_in, udp_out, tx_ant, rx_ant, ref, web_bind, web_root, file_dir;
+    std::string args, fpga, mode, input, output, udp_in, udp_out, status_udp, tx_ant, rx_ant, ref, web_bind, web_root, file_dir;
     double freq, tx_freq, rx_freq, rs, bw, tx_bw, rx_bw, tx_gain, rx_gain, duration, preamble;
     int modcod, rolloff_i, max_iter, web_port;
     bool no_pilots, raw;
@@ -1036,6 +1036,7 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         ("output", po::value<std::string>(&output)->default_value(""), "RX payload file ('-' = stdout); none = PRBS BER check")
         ("udp-in", po::value<std::string>(&udp_in)->default_value(""), "TX payload: UDP datagrams received on [addr:]port (addr default 127.0.0.1, 0.0.0.0 = all)")
         ("udp-out", po::value<std::string>(&udp_out)->default_value(""), "RX payload: send the received UDP datagrams to host:port")
+        ("status-udp", po::value<std::string>(&status_udp)->default_value(""), "any mode: once a second send the status JSON (as /api/status) and the spectrum JSON (as /api/spectrum) as two UDP datagrams to [addr:]port")
         ("max-iter", po::value<int>(&max_iter)->default_value(25), "LDPC iterations (1..50)")
         ("preamble", po::value<double>(&preamble)->default_value(1.0), "TX: seconds of zero bytes before the file (RX lock time)")
         ("raw", po::bool_switch(&raw), "no file header: TX sends the bytes as they are, RX writes every byte")
@@ -1259,7 +1260,17 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
     std::vector<std::complex<float>> snap_x;
     std::atomic<bool> snap_on{false};
     std::thread snap_thread;
-    if (web && has_cap && do_rx)
+    // --status-udp: the same status / spectrum as the web page, sent as UDP JSON once a second
+    const bool status_on = !status_udp.empty();
+    int status_fd = -1;
+    sockaddr_in status_dst{};
+    if (status_on) {
+        status_dst = udp_addr(status_udp, "127.0.0.1");
+        status_fd  = socket(AF_INET, SOCK_DGRAM, 0);
+        if (status_fd < 0) throw std::runtime_error("status UDP socket: " + std::string(strerror(errno)));
+        fprintf(g_log, "status JSON: UDP datagrams to %s once a second\n", addr_str(status_dst).c_str());
+    }
+    if ((web || status_on) && has_cap && do_rx)
         snap_thread = std::thread([&] {
             while (!stop_signal) {
                 if (!snap_on) {
@@ -1450,7 +1461,7 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
     auto t_poll  = std::chrono::steady_clock::now();
     auto t_print = t_poll;
     while (!stop_signal) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(web ? 10 : 1000));
+        std::this_thread::sleep_for(std::chrono::milliseconds(web ? 10 : status_on ? 100 : 1000));
         // ---- requests from the web page
         if (web) {
             std::map<std::string, double> pend;
@@ -1524,11 +1535,11 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
             }
         }
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration<double>(now - t_poll).count() < (web ? 0.1 : 0.999)) continue;     // web: 10 Hz
+        if (std::chrono::duration<double>(now - t_poll).count() < (web ? 0.1 : status_on ? 0.499 : 0.999)) continue;   // web: 10 Hz
         t_poll = now;
         snap_on = S.rx_data;
         auto s = modem.status();
-        if (web) {
+        if (web || status_on) {
             update_web(s);
             update_ms = 1e3 * std::chrono::duration<double>(std::chrono::steady_clock::now() - now).count();
         }
@@ -1536,6 +1547,16 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
             t_print = now;
             if (S.do_tx) print_tx(s, *S.tst, S.tx_data, S.uin.get());
             if (S.do_rx) print_rx(s, S.rs_rx, *S.rst, S.rx_data, S.raw, S.uout.get());
+            if (status_on) {                       // status first, then the spectrum (two datagrams)
+                std::string sj, pj;
+                {
+                    std::lock_guard<std::mutex> l(g_web.m);
+                    sj = g_web.status_json;
+                    pj = g_web.spectrum_json;
+                }
+                sendto(status_fd, sj.data(), sj.size(), 0, (const sockaddr*)&status_dst, sizeof status_dst);
+                sendto(status_fd, pj.data(), pj.size(), 0, (const sockaddr*)&status_dst, sizeof status_dst);
+            }
         }
         // restart the BER statistics once, after the receiver has settled
         if (S.do_rx && !S.cleared && ((s[0] >> 14) & 1) && s[10] >= 5) {

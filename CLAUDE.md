@@ -101,18 +101,22 @@ Long jobs (`run_all.sh`, Vivado/ISE builds, BER sweeps) should run in the backgr
 ## B210 specifics
 
 * UHD source used to build the FPGA image must be the **same version** as the UHD installed on the PCs (FPGA compat number);
-  `build_fpga.sh` clones tag `v$(uhd_config_info --version)`. Patch verified on UHD 4.1.0.5 / 4.6.0.0 / 4.8.0.0 / 4.11.0.0.
+  `build_fpga.sh` clones tag `v$(uhd_config_info --version)`. Patch verified on UHD 4.1.0.5 / 4.6.0.0 / 4.8.0.0 / 4.9.0.0 / 4.11.0.0.
 * `patch_uhd_fpga.py` is idempotent (patches from `*.orig`, marker `DVBS2-PATCH`); new make target `B210_DVBS2`.
 * Host ↔ FPGA: user settings regs (device arg `enable_user_regs`, `poke32(4*n)`, `peek64(8*m)` → status words 2m/2m+1, ID word 30 = 0x44564232).
   Payload bytes ride in sc16 samples: TX `I[8]` valid + `I[7:0]` byte; RX `I[9]` frame end, `I[8]` valid, `I[7:0]` byte, `Q` = 16-bit seq.
+* `--status-udp [addr:]port` (any mode): once a second the `/api/status` JSON and the `/api/spectrum` JSON are sent as two UDP datagrams
+  (the FPGA snapshot thread runs as in web mode); used by the fieldlink app to show lock / Es/N0 / spectrum on its dashboard.
 * UDP mode (`--udp-in` / `--udp-out`, host only): each datagram framed as in `host/udp_frame.hpp` (sync C5 3A, len, seq, CRC-16, data, CRC-32);
   TX zero-fills the current BBFRAME when its queue is empty (BBFRAME = DFL/8 bytes, FIFO reset at session start keeps the count aligned).
 * File mode: TX sends `--preamble` seconds of zeros, then header (magic `A5 'DVBS2' 5A C3`, u64 len, ~len), then the file; RX writes only after the header and stops after len bytes.
 * RX decodes MODCOD/pilots from the PLHEADER; only roll-off (and Rs, frequency) must match TX.
-* Built with ISE 14.7 against UHD 4.11.0.0 (routes, timing met: 54.7k LUT / 79 % slices / 88 % BRAM / 86 % DSP) and
+* Built with ISE 14.7 against UHD 4.11.0.0 and, with the current RTL, UHD 4.9.0.0 (routes, timing met: 55.0k LUT / 80 % slices / 88 % BRAM / 86 % DSP, ~45 min) and
   verified on a real B210 in `--web` trx mode. Image is **single-radio** (radio 1 removed to make room).
   Area is tight: the first build failed routing at 92 % slices until the PLS FHT became the streaming `rx_pls_wht`.
-* ISE licence: FLEXnet reads the host ID only from `eth0`; on this VM a dummy `eth0` with the licence MAC is needed (lost on reboot).
+* ISE licence: AMD's licensing site gives every registered user a free node-locked "ISE Design Suite: Embedded Edition" licence
+  (covers XC6SLX150; WebPACK does not). FLEXnet reads the host ID only from `eth0`; on this PC a dummy `eth0` with the licence MAC
+  is needed (lost on reboot). ISE 14.7 runs on Ubuntu 24.04 after symlinking libncurses.so.5 / libtinfo.so.5 to the .so.6 files.
 
 ## Known environment gotchas
 

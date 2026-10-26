@@ -41,7 +41,7 @@ simulations and PC-side tests pass. **It has not been run on hardware yet** (fol
 | `build_fpga.sh` | One step: fetch ADI HDL (hdl_2026_r1) → create project → Vivado synthesis / implementation → BOOT.BIN |
 | `make_sd_image.sh` | One step: Kuiper Linux 2026.1.0 image + BOOT.BIN + `dvbs2_adrv` service + static IP → `.img` |
 | `lib.sh` | Shared by both scripts: downloads Kuiper and the tools (mtools, Arm compiler, bootgen), assembles BOOT.BIN |
-| `sw/dvbs2_adrv.cpp` | Program on the SOM: modem through `/dev/mem`, AD9364 through sysfs + libad9361, UDP, web server, file transfer (shared parts in `../host_common/`) |
+| `sw/dvbs2_adrv.cpp` | Program on the SOM: modem through `/dev/mem`, AD9364 through sysfs + libad9361, UDP, web server, file transfer (shared parts in `../common/`) |
 | `sw/build.sh`, `sw/test_mock.sh` | Cross-compile; PC test of UDP and the web API against a software FPGA model |
 | `rootfs/` | `dvbs2.service` and the `/etc/dvbs2.conf` template installed into the image |
 | `sim/tb_adrv.v`, `sim/reg_adrv.sh` | Two SOMs (separate sample clocks, 12-bit DAC/ADC) + channel model, payload over AXI-Lite |
@@ -211,7 +211,7 @@ the program sets this itself.
 
 Open `http://192.168.30.1/` (port 80; `web` and `web-bind` in `/etc/dvbs2.conf`).
 
-* The page is [`../host_common/web/index.html`](../host_common/web/index.html), shared with the B210 program and
+* The page is [`../common/web/index.html`](../common/web/index.html), shared with the B210 program and
   installed at `/usr/local/share/dvbs2/web/`. On this board every card is shown.
 * **RX Decode & RF Signal:** decode rate (0–100 % of the MODCOD capacity every 0.5 s), lock with MODCOD/pilots,
   Es/N0 (blind M2M4 estimate), Eb/N0, RSSI (AD9364, relative dB), signal level (ADC dBFS; red above −3 dBFS),

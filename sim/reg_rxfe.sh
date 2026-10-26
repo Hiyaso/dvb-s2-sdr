@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 run() {
   d=out/reg_rxfe/$1; mkdir -p $d
   ./vl.sh tb_rxfe $d -GNSYM=40000 -GPPM_STEP=$2 -GDELAY=$3 -GCFO=$4 -GNOISE=$5 > /dev/null || { echo BUILD FAIL; return; }
-  (cd $d && ./obj/tb_rxfe > sim.log && python3 ../../../check_rxfe.py 4 1 $(python3 -c "print($4*2/2**32)") > check.log)
+  (cd $d && ./obj/tb_rxfe > sim.log && python3 ../../../tools/check_rxfe.py 4 1 $(python3 -c "print($4*2/2**32)") > check.log)
   echo "$1: $(cat $d/check.log | tr '\n' ' ')"
 }
 run clean 0 20000 0 0 &

@@ -2,7 +2,7 @@
 // test_tun.cpp -- the TUN payload path of dvbs2_b210 without a B210 (see test_tun.sh).
 //
 // IP packets -> UdpIn (tun) -> udp_frame -> "air" -> UdpDeframer -> UdpOut (tun) -> IP packets, with the
-// same code as dvbs2_b210 (sdr/host_common).  The air stands in for the modem: bytes leave the TX queue
+// same code as dvbs2_b210 (sdr/common).  The air stands in for the modem: bytes leave the TX queue
 // at a fixed rate and a BBFRAME that is not full when the queue runs empty is completed with zero
 // bytes (as tx_worker does); optionally one byte in N is corrupted, or a direction is cut.
 //

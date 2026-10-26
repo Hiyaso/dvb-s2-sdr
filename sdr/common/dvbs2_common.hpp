@@ -1,6 +1,6 @@
 //
 // dvbs2_common.hpp -- DVB-S2 frame parameters and the run state of the host programs.
-// Shared by sdr/b210/host/dvbs2_b210.cpp and sdr/adrv9364/sw/dvbs2_adrv.cpp (header-only, one translation unit each).
+// Shared by sdr/b210/sw/dvbs2_b210.cpp and sdr/adrv9364/sw/dvbs2_adrv.cpp (header-only, one translation unit each).
 //
 #pragma once
 #include <atomic>

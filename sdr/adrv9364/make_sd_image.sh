@@ -81,7 +81,7 @@ rm dvbs2_adrv
 write $ADRV/sw/build/dvbs2_adrv dvbs2_adrv
 cd /usr/local/share/dvbs2/web
 rm index.html
-write $ADRV/../host_common/web/index.html index.html
+write $ADRV/../common/web/index.html index.html
 cd /etc
 rm dvbs2.conf
 write $W/dvbs2.conf dvbs2.conf

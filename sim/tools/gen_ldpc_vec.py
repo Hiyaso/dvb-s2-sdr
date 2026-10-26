@@ -3,7 +3,7 @@
 usage: gen_ldpc_vec.py outdir modcod esn0 nframes [max_iter] [seed]"""
 import sys, os
 import numpy as np
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'python'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'python'))
 from dvbs2_ref import *
 import ldpc_fixed as L
 

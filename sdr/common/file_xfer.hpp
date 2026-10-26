@@ -1,6 +1,6 @@
 //
 // file_xfer.hpp -- file transfer framing (preamble, header, length) and the TX payload input queue.
-// Shared by sdr/b210/host/dvbs2_b210.cpp and sdr/adrv9364/sw/dvbs2_adrv.cpp (header-only, one translation unit each).
+// Shared by sdr/b210/sw/dvbs2_b210.cpp and sdr/adrv9364/sw/dvbs2_adrv.cpp (header-only, one translation unit each).
 //
 #pragma once
 #include <algorithm>

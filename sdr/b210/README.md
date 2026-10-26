@@ -38,10 +38,10 @@ B210 FPGA radio 0                                B210 FPGA radio 0
 | `rtl/b210_fifo.v` | FIFO |
 | `patch_uhd_fpga.py` | Adds the modem to the B210 FPGA in a UHD source tree, with a new `make B210_DVBS2` target |
 | `build_fpga.sh` | One step: fetch the UHD source matching the installed UHD → patch → ISE build |
-| `host/dvbs2_b210.cpp` | PC program (UHD C++), built with `host/build.sh`; built-in web server with `--web` |
-| `host/dvbs2_b210.conf` | Example configuration file (`--config`): station 1 of the two-way IP link, every key explained |
-| `../host_common/` | Headers shared with the ADRV9364 program (UDP framing, file transfer, spectrum / SNR, mini HTTP server) and the web page `web/index.html`; `net_tun.hpp` (TUN interface) is used by this program only |
-| `host/test_tun.sh`, `host/test_tun.cpp` | Test of the TUN / UDP packet path without a B210 (socket pairs; with `sudo ... netns`, two real TUN interfaces in network namespaces) |
+| `sw/dvbs2_b210.cpp` | PC program (UHD C++), built with `sw/build.sh`; built-in web server with `--web` |
+| `sw/dvbs2_b210.conf` | Example configuration file (`--config`): station 1 of the two-way IP link, every key explained |
+| `../common/` | Headers shared with the ADRV9364 program (UDP framing, file transfer, spectrum / SNR, mini HTTP server) and the web page `web/index.html`; `net_tun.hpp` (TUN interface) is used by this program only |
+| `sw/test_tun.sh`, `sw/test_tun.cpp` | Test of the TUN / UDP packet path without a B210 (socket pairs; with `sudo ... netns`, two real TUN interfaces in network namespaces) |
 | `sim/tb_b210.v`, `sim/reg_b210.sh` | Two "B210s" with a channel model between them; PRBS and file modes |
 
 **Verification status**
@@ -52,13 +52,13 @@ B210 FPGA radio 0                                B210 FPGA radio 0
   below frame capacity (dummy frames in between) 0 errors.
 * The B210-specific RTL variants (folded FIR, Spartan-6 byte-write RAM) are bit-exact with the Z7020 build
   (LDPC, TX and system regressions).
-* TUN / UDP packet path (`host/test_tun.sh`, the program's own code with an emulated link): 3000 packets of
+* TUN / UDP packet path (`sw/test_tun.sh`, the program's own code with an emulated link): 3000 packets of
   20–9000 B arrive intact and in order; with 1 byte in 20000 corrupted every damaged packet is dropped by
   the CRC and counted (2873 received + 127 lost = 3000); with input at twice the link rate the 0.2 s queue
   drops the excess and the rest arrives intact. Two-way link check (two stations over the emulated air): the link
   comes up after the first hellos, 200 packets each way arrive with no hello leaked into the interface; cutting
   one direction takes both stations down within 2 s and the packets are held back; restoring it brings the link
-  up again. The root test with real TUN interfaces and carrier (`sudo host/test_tun.sh netns`) and the TUN mode on
+  up again. The root test with real TUN interfaces and carrier (`sudo sw/test_tun.sh netns`) and the TUN mode on
   the B210 itself have not been run yet.
 * The patch applies to UHD v4.1.0.5, v4.6.0.0, v4.8.0.0, v4.11.0.0 and master.
 * ISE 14.7 build against UHD 4.11.0.0: routed, all timing constraints met (radio clock checked at 61.44 MHz).
@@ -116,7 +116,7 @@ in RX timing recovery / AGC (about 100 more registers; `reg_b210` passes, not ye
 
 ```bash
 sudo apt install libuhd-dev libboost-program-options-dev cmake g++
-sdr/b210/host/build.sh            # -> sdr/b210/host/build/dvbs2_b210
+sdr/b210/sw/build.sh            # -> sdr/b210/sw/build/dvbs2_b210
 ```
 
 Without cmake, `build.sh` compiles directly with g++.
@@ -125,8 +125,8 @@ Without cmake, `build.sh` compiles directly with g++.
 
 ```bash
 sdr/b210/sim/reg_b210.sh          # outputs in sdr/b210/sim/out
-sdr/b210/host/test_tun.sh         # TUN / UDP packet path without a B210 (no root), expect PASS
-sudo sdr/b210/host/test_tun.sh netns   # the same with real TUN interfaces in two network namespaces and the
+sdr/b210/sw/test_tun.sh         # TUN / UDP packet path without a B210 (no root), expect PASS
+sudo sdr/b210/sw/test_tun.sh netns   # the same with real TUN interfaces in two network namespaces and the
                                        # two-way link check: carrier, ping both ways, UDP, TCP (iperf3); expect PASS
 ```
 
@@ -176,7 +176,7 @@ RX LOCK 8PSK 2/3 pil FLL3 CFO   +2315.4 Hz | frames 812 miss 0 | LDPC it  6 drop
 
 * Each datagram (0–65535 B) is framed on its own and delivered with the same boundaries:
   `C5 3A | length u16 | seq u16 | CRC-16 (length + seq) | data | CRC-32 (data)`, big endian, 12 bytes overhead
-  (`../host_common/udp_frame.hpp`).
+  (`../common/udp_frame.hpp`).
 * When TX runs out of data it pads the current BBFRAME with 0x00, so a small datagram never waits in a half-full
   frame; after that it sends dummy frames. Latency is dominated by UHD's TX USB buffering: median ≈ 51 ms at 2 MHz,
   8PSK 2/3; `--args num_send_frames=4,send_frame_size=4096` brings it to ≈ 23 ms at a higher risk of USB underruns.
@@ -263,7 +263,7 @@ interface; the program prints a note in that case.
 
 Defaults can be kept in a file instead of on the command line: `--config FILE` reads `key = value` lines,
 where the keys are the long option names (`dvbs2_b210 --help`), switches take `1` / `0`, and `#` starts a comment.
-Options given on the command line override the file. [`host/dvbs2_b210.conf`](host/dvbs2_b210.conf) is an
+Options given on the command line override the file. [`sw/dvbs2_b210.conf`](sw/dvbs2_b210.conf) is an
 example for the two-way IP link above.
 
 ```bash
@@ -342,13 +342,13 @@ format `{I[31:16], Q[15:0]}`.
 One B210 transmitting to itself, controlled from a browser:
 
 ```bash
-cd sdr/b210/host/build
+cd sdr/b210/sw/build
 ./dvbs2_b210 --web 8080 --fpga ../../out/usrp_b210_dvbs2_fpga.bin
 # open http://localhost:8080
 ```
 
-* The page is [`../host_common/web/index.html`](../host_common/web/index.html), shared with the ADRV9364 program.
-  The program serves it from `<program>/../web` if that exists, otherwise from `sdr/host_common/web` in the source
+* The page is [`../common/web/index.html`](../common/web/index.html), shared with the ADRV9364 program.
+  The program serves it from `<program>/../web` if that exists, otherwise from `sdr/common/web` in the source
   tree (`--web-root DIR` overrides). The modem settings card (MODCOD etc. are command-line options here) is hidden.
 * **Data Link card** (shown when the program was started with `--tun` and/or `--udp-in`/`--udp-out`): buttons to
   switch the payload between PRBS test, UDP data and network interface; the TUN interface name, state, address and

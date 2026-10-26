@@ -1,5 +1,5 @@
 // tb_tx.v -- TX unit test: dumps PL-frame symbols and shaped samples for
-// comparison with the Python reference (sim/check_tx.py).
+// comparison with the Python reference (sim/tools/check_tx.py).
 `timescale 1ns/1ps
 module tb_tx;
 parameter MODCOD = 4;

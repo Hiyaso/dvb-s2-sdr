@@ -10,6 +10,6 @@ if command -v cmake > /dev/null; then
   cmake .. > /dev/null
   make -j"$(nproc)"
 else
-  g++ -std=c++17 -O2 -I../../../host_common -o dvbs2_b210 ../dvbs2_b210.cpp -luhd -lboost_program_options -lpthread
+  g++ -std=c++17 -O2 -I../../../common -o dvbs2_b210 ../dvbs2_b210.cpp -luhd -lboost_program_options -lpthread
 fi
 echo "built $(pwd)/dvbs2_b210"

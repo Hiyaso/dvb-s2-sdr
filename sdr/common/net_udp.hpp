@@ -2,7 +2,7 @@
 // net_udp.hpp -- UDP payload mode: datagrams in (TX) and out (RX), framed as in udp_frame.hpp.
 // With tun = true the same code carries the IP packets of a TUN interface (net_tun.hpp):
 // one read() / write() of the TUN file descriptor is one packet, like one datagram.
-// Shared by sdr/b210/host/dvbs2_b210.cpp and sdr/adrv9364/sw/dvbs2_adrv.cpp (header-only, one translation unit each).
+// Shared by sdr/b210/sw/dvbs2_b210.cpp and sdr/adrv9364/sw/dvbs2_adrv.cpp (header-only, one translation unit each).
 //
 #pragma once
 #include <arpa/inet.h>

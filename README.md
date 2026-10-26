@@ -138,8 +138,11 @@ The channel emulator `ch_emu` is only used by the Z7020 loopback top and the tes
 | `rtl/common/` | `fir_sym33`, `cordic`, `ram_sdp`, `sample_pacer`, `ch_emu` (channel emulator) |
 | `rtl/gen/` | Generated ROM / parameter modules (from `python/gen_rtl_roms.py`; do not edit by hand) |
 | `python/` | Reference models: `dvbs2_ref` (TX golden), `ldpc_fixed` (bit-exact LDPC), `bch_hw_model`, `sync_model`, `frame_model`, `run_e2e.py`, `gen_rtl_roms.py` |
-| `sim/` | Core testbenches (`sim/tb/`), regression scripts, `vl.sh`; outputs in `sim/out/` (git-ignored) |
+| `sim/` | Regression scripts (`reg_*.sh`, `run_all.sh`, `sync_loss.sh`), `vl.sh`; outputs in `sim/out/` (git-ignored) |
+| `sim/tb/` | Core testbenches |
+| `sim/tools/` | Vector generators and result checkers called by the regression scripts (`gen_*_vec.py`, `check_*.py`) |
 | `sim/ber/` | BER harness: C++ TX / AWGN / demapper + Verilated RTL LDPC and BCH |
+| `docs/img/` | Images (e.g. `e2e_example.png`, output of `run_e2e.py --plot`) |
 | `setup_ubuntu.sh` | Development environment setup |
 | `sdr/` | Board projects built from this PHY, see [`sdr/README.md`](sdr/README.md) |
 | `CLAUDE.md` | Project notes for Claude Code (commands, regressions, rules for changing the RTL) |

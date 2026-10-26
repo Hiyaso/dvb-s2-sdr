@@ -5,7 +5,7 @@
 // datagrams (UdpIn / UdpOut with tun = true, framed as in udp_frame.hpp); on the receiving side
 // each recovered packet is written back into that side's interface.  The device is opened once
 // and kept for the whole program, so session restarts keep the interface and its address.
-// Used by sdr/b210/host/dvbs2_b210.cpp (header-only, one translation unit).
+// Used by sdr/b210/sw/dvbs2_b210.cpp (header-only, one translation unit).
 //
 // Creating the interface and setting its address need CAP_NET_ADMIN: run as root, or create it
 // once beforehand (sudo ip tuntap add dev dvbs0 mode tun user $USER; sudo ip addr add ...;

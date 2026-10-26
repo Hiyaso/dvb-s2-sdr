@@ -32,7 +32,7 @@ ok &= s['tx']['mode'] == 'udp' and s['rx']['mode'] == 'udp'
 c = s['caps']
 print('caps: modem_cfg %s udp %s shared_fs %s, bw %.3f..%.3f MHz' % (c['modem_cfg'], c['udp'], c['shared_fs'], c['bw_min'] / 1e6, c['bw_max'] / 1e6))
 ok &= c['modem_cfg'] and c['udp'] and c['shared_fs'] and 0 < c['bw_min'] < 1.35e6 < c['bw_max']
-ok &= b'DVB-S2 Modem' in get('/') and b'applyCaps' in get('/')   # shared page sdr/host_common/web (default web root)
+ok &= b'DVB-S2 Modem' in get('/') and b'applyCaps' in get('/')   # shared page sdr/common/web (default web root)
 # UDP link: 1500 datagrams of 1..1400 bytes at ~150 kB/s (8PSK 2/3 capacity at 1 Msym/s ~236 kB/s)
 import threading, queue
 rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); rx.bind(('127.0.0.1', 15001))

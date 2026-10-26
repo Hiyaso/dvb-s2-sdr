@@ -1,6 +1,6 @@
 //
 // mini_http.hpp -- minimal HTTP server and JSON helpers for the web mode.
-// Shared by sdr/b210/host/dvbs2_b210.cpp and sdr/adrv9364/sw/dvbs2_adrv.cpp (header-only, one translation unit each).
+// Shared by sdr/b210/sw/dvbs2_b210.cpp and sdr/adrv9364/sw/dvbs2_adrv.cpp (header-only, one translation unit each).
 //
 #pragma once
 #include <arpa/inet.h>
@@ -131,13 +131,13 @@ static std::string exe_dir()
     std::string s = p;
     return s.substr(0, s.find_last_of('/'));
 }
-// web page directory: the installed one if it holds index.html, else sdr/host_common/web of the source tree
-// (program built in sdr/b210/host/build or sdr/adrv9364/sw/build)
+// web page directory: the installed one if it holds index.html, else sdr/common/web of the source tree
+// (program built in sdr/b210/sw/build or sdr/adrv9364/sw/build)
 static std::string default_web_root(const std::string& installed)
 {
     std::string probe;
     if (read_file(installed + "/index.html", probe)) return installed;
-    return exe_dir() + "/../../../host_common/web";
+    return exe_dir() + "/../../../common/web";
 }
 static std::string jstr(const std::string& s)
 {

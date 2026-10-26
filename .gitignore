@@ -20,11 +20,11 @@ vivado*.str
 xsim.dir/
 
 # USRP B210
-sdr/b210/host/build/
+sdr/b210/sw/build/
 sdr/b210/uhd-src/
 sdr/b210/out/
 sdr/b210/build_fpga.log*
-sdr/b210/host/dvbs2_files/
+sdr/b210/sw/dvbs2_files/
 dvbs2_files/
 sdr/b210/build_fpga.out
 

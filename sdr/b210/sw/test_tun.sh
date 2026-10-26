@@ -9,7 +9,7 @@
 set -e
 cd "$(dirname "$0")"
 mkdir -p build
-g++ -std=c++17 -O2 -Wall -Wno-unused-function -Wno-unused-variable -I../../host_common -o build/test_tun test_tun.cpp -pthread
+g++ -std=c++17 -O2 -Wall -Wno-unused-function -Wno-unused-variable -I../../common -o build/test_tun test_tun.cpp -pthread
 [ "$1" = netns ] || exec build/test_tun pair
 
 [ "$(id -u)" = 0 ] || { echo "the netns test needs root: sudo $0 netns"; exit 1; }

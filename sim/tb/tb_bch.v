@@ -1,4 +1,4 @@
-// tb_bch.v -- BCH decoder unit test (vectors from sim/gen_bch_vec.py).
+// tb_bch.v -- BCH decoder unit test (vectors from sim/tools/gen_bch_vec.py).
 `timescale 1ns/1ps
 module tb_bch;
 reg clk = 0, rst = 1;

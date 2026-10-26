@@ -701,7 +701,7 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         ("duration", po::value<double>(&duration)->default_value(0), "seconds to run (0 = until Ctrl-C)")
         ("web", po::value<int>(&web_port)->default_value(0), "web page on this TCP port (0 = off)")
         ("web-bind", po::value<std::string>(&web_bind)->default_value("127.0.0.1"), "web: address to listen on (0.0.0.0 = all)")
-        ("web-root", po::value<std::string>(&web_root)->default_value(""), "web: directory with index.html (default <program>/../web, else sdr/host_common/web of the source tree)")
+        ("web-root", po::value<std::string>(&web_root)->default_value(""), "web: directory with index.html (default <program>/../web, else sdr/common/web of the source tree)")
         ("file-dir", po::value<std::string>(&file_dir)->default_value("dvbs2_files"), "web: directory for sent / received files");
     // clang-format on
     po::variables_map vm;

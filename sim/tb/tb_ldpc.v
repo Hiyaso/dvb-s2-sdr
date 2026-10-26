@@ -1,5 +1,5 @@
 // tb_ldpc.v -- LDPC decoder unit test: LLR frames from ldpc_in.txt, decoded
-// bytes + iteration counts to ldpc_out.txt (compared by sim/check_ldpc.py).
+// bytes + iteration counts to ldpc_out.txt (compared by sim/tools/check_ldpc.py).
 `timescale 1ns/1ps
 module tb_ldpc;
 parameter MAXIT = 25;

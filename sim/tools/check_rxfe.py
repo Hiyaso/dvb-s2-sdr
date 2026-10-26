@@ -3,7 +3,7 @@
 usage: check_rxfe.py modcod pilots [cfo_rad_per_sym]"""
 import sys, os
 import numpy as np
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'python'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'python'))
 from dvbs2_ref import *
 mc, pil = int(sys.argv[1]), bool(int(sys.argv[2]))
 d = np.loadtxt('rx_syms.txt')

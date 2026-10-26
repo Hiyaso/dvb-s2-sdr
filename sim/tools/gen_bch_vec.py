@@ -3,7 +3,7 @@
 usage: gen_bch_vec.py outdir nframes seed"""
 import sys, os
 import numpy as np
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'python'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'python'))
 from dvbs2_ref import CODES, CODE_ID, bch_encode
 import bch_hw_model as H
 out, nfr, seed = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])

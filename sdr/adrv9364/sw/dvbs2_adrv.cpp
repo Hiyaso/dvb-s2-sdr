@@ -586,7 +586,7 @@ static const char* HELP =
     "  --duration S       seconds to run (0 = until stopped)\n"
     "  --web PORT         web page on this TCP port (0 = off); --web-bind ADDR (default 0.0.0.0)\n"
     "  --web-root DIR     directory with index.html (default <program>/../share/dvbs2/web,\n"
-    "                     else sdr/host_common/web of the source tree)\n"
+    "                     else sdr/common/web of the source tree)\n"
     "  --file-dir DIR     web: directory for sent / received files (default /var/lib/dvbs2)\n";
 
 struct Config {

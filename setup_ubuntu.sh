@@ -76,7 +76,7 @@ command -v vivado >/dev/null && echo "   vivado: $(command -v vivado)" || echo "
 if [ $WANT_UHD = 1 ]; then
   echo
   echo "== B210 host program"
-  sdr/b210/host/build.sh
+  sdr/b210/sw/build.sh
   echo "   (USRP images for the stock FPGA: sudo uhd_images_downloader)"
 fi
 

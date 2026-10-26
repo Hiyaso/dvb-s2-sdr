@@ -47,7 +47,11 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include "udp_frame.hpp"
+#include "dsp_util.hpp"
+#include "dvbs2_common.hpp"
+#include "file_xfer.hpp"
+#include "mini_http.hpp"
+#include "net_udp.hpp"
 
 namespace po = boost::program_options;
 
@@ -146,30 +150,7 @@ struct Modem {
     }
 };
 
-// ---------------------------------------------------------------- DVB-S2 frame parameters
-static const char* MODCOD_NAME[] = {"DUMMY", "QPSK 1/4", "QPSK 1/3", "QPSK 2/5", "QPSK 1/2", "QPSK 3/5",
-    "QPSK 2/3", "QPSK 3/4", "QPSK 4/5", "QPSK 5/6", "QPSK 8/9", "?", "8PSK 3/5", "8PSK 2/3", "8PSK 3/4",
-    "8PSK 5/6", "8PSK 8/9"};
-static int kbch_of(int mc)
-{
-    static const int kq[] = {0, 3072, 5232, 6312, 7032, 9552, 10632, 11712, 12432, 13152, 14232, 0,
-        9552, 10632, 11712, 13152, 14232};
-    return (mc >= 1 && mc <= 16) ? kq[mc] : 0;
-}
-static int frame_symbols(int mc, bool pilots)
-{
-    bool is8 = mc >= 12;
-    if (is8)
-        return pilots ? 5598 : 5490;
-    return pilots ? 8370 : 8190;
-}
-static double rolloff_of(int ro) { return ro == 1 ? 0.25 : ro == 2 ? 0.20 : 0.35; }
-
-static std::atomic<bool> stop_signal{false};   // Ctrl-C / end of program
-static std::atomic<bool> sess_stop{false};     // end of the current streaming session
-static FILE* g_log = stdout;     // status output (stderr when the payload goes to stdout)
 static void sig_int_handler(int) { stop_signal = true; }
-static bool running() { return !stop_signal && !sess_stop; }
 
 // ---------------------------------------------------------------- TX thread
 struct TxStats {
@@ -177,173 +158,6 @@ struct TxStats {
     std::atomic<bool> pad_done{false};
     uint64_t pad_bytes = 0;      // zero bytes appended after the end of the input (flushes the last frame)
     // fill: zero bytes that complete a BBFRAME while the (UDP) input is idle
-};
-
-// ---------------------------------------------------------------- file framing
-// The receiver can only lock after the transmitter has started, so the TX first sends
-// a preamble of zero bytes, then a header (magic + length + ~length), then the file.
-// The RX side discards everything before a valid header and stops after <length> bytes,
-// so preamble and end padding never reach the output file.
-static const uint8_t FILE_MAGIC[8] = {0xA5, 'D', 'V', 'B', 'S', '2', 0x5A, 0xC3};
-static const uint64_t LEN_UNKNOWN  = ~uint64_t(0);    // stdin: stream until stopped
-static void put_u64(std::vector<uint8_t>& v, uint64_t x)
-{
-    for (int i = 0; i < 8; i++) v.push_back(uint8_t(x >> (8 * i)));
-}
-static uint64_t get_u64(const uint8_t* p)
-{
-    uint64_t x = 0;
-    for (int i = 7; i >= 0; i--) x = (x << 8) | p[i];
-    return x;
-}
-struct FileSink {
-    bool raw = false;
-    FILE* out = nullptr;
-    int state = 0;                  // 0 = looking for the header, 1 = writing, 2 = done
-    std::deque<uint8_t> win;
-    uint64_t len = 0, written = 0;
-    std::vector<uint8_t> wbuf;
-    void byte(uint8_t b)
-    {
-        if (raw || state == 1) {
-            if (state == 2) return;
-            wbuf.push_back(b);
-            ++written;
-            if (!raw && len != LEN_UNKNOWN && written >= len) state = 2;
-            return;
-        }
-        if (state == 2) return;
-        win.push_back(b);
-        if (win.size() > 24) win.pop_front();
-        if (win.size() < 24) return;
-        uint8_t h[24];
-        std::copy(win.begin(), win.end(), h);
-        if (!std::equal(FILE_MAGIC, FILE_MAGIC + 8, h)) return;
-        uint64_t l = get_u64(h + 8), nl = get_u64(h + 16);
-        if (l != ~nl) return;
-        len     = l;
-        written = 0;
-        state   = (len == 0) ? 2 : 1;
-        win.clear();
-    }
-    void flush()
-    {
-        if (!wbuf.empty() && out) {
-            fwrite(wbuf.data(), 1, wbuf.size(), out);
-            fflush(out);
-        }
-        wbuf.clear();
-    }
-};
-
-struct InputQueue {
-    std::mutex m;
-    std::condition_variable cv;
-    std::deque<uint8_t> q;
-    bool eof = false;
-    static const size_t CAP = 1 << 20;
-};
-static void reader_worker(FILE* in, InputQueue* iq, std::vector<uint8_t> prefix)
-{
-    {
-        std::lock_guard<std::mutex> l(iq->m);
-        iq->q.insert(iq->q.end(), prefix.begin(), prefix.end());
-    }
-    std::vector<uint8_t> b(4096);
-    while (running()) {
-        size_t got = fread(b.data(), 1, b.size(), in);
-        std::unique_lock<std::mutex> l(iq->m);
-        for (size_t i = 0; i < got; i++) {
-            iq->cv.wait(l, [&] { return iq->q.size() < InputQueue::CAP || !running(); });
-            if (!running()) return;
-            iq->q.push_back(b[i]);
-        }
-        if (got == 0) {        // EOF or error
-            iq->eof = true;
-            return;
-        }
-    }
-}
-
-// ---------------------------------------------------------------- UDP
-// "[host:]port" (host default def_host) -> IPv4 address
-static sockaddr_in udp_addr(const std::string& s, const std::string& def_host)
-{
-    const size_t c         = s.rfind(':');
-    const std::string host = c == std::string::npos ? def_host : s.substr(0, c);
-    const std::string port = c == std::string::npos ? s : s.substr(c + 1);
-    addrinfo hints{}, *res = nullptr;
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    if (host.empty() || port.empty() || getaddrinfo(host.c_str(), port.c_str(), &hints, &res) != 0 || !res)
-        throw std::runtime_error("bad UDP address '" + s + "' (expected [host:]port)");
-    sockaddr_in a;
-    std::memcpy(&a, res->ai_addr, sizeof(a));
-    freeaddrinfo(res);
-    return a;
-}
-static std::string addr_str(const sockaddr_in& a)
-{
-    char b[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &a.sin_addr, b, sizeof(b));
-    return std::string(b) + ":" + std::to_string(ntohs(a.sin_port));
-}
-
-// TX: datagrams received on a UDP port, framed into the payload queue
-struct UdpIn {
-    int fd = -1;
-    size_t limit = 0;            // queue limit (bytes): a datagram that does not fit is dropped
-    std::atomic<uint64_t> packets{0}, bytes{0}, drops{0};
-    ~UdpIn()
-    {
-        if (fd >= 0) close(fd);
-    }
-};
-static void udp_reader_worker(UdpIn* u, InputQueue* iq)
-{
-    std::vector<uint8_t> b(UDP_MAX_PAYLOAD), f;
-    uint16_t seq = 0;
-    while (running()) {
-        const ssize_t got = recv(u->fd, b.data(), b.size(), 0);    // 0.1 s timeout (SO_RCVTIMEO)
-        if (got < 0) continue;
-        f.clear();
-        udp_frame(b.data(), size_t(got), seq, f);
-        std::lock_guard<std::mutex> l(iq->m);
-        // a datagram is queued as a whole (the TX pads only at datagram boundaries);
-        // when the radio link is slower than the input, datagrams are dropped, not delayed
-        if (!iq->q.empty() && iq->q.size() + f.size() > u->limit) {
-            u->drops++;
-            continue;
-        }
-        iq->q.insert(iq->q.end(), f.begin(), f.end());
-        seq++;
-        u->packets++;
-        u->bytes += size_t(got);
-    }
-}
-
-// RX: recovered datagrams sent to a UDP address
-struct UdpOut {
-    int fd = -1;
-    sockaddr_in dst{};
-    UdpDeframer df;
-    std::vector<uint8_t> pkt;
-    std::atomic<uint64_t> packets{0}, bytes{0}, bad{0}, lost{0}, send_err{0};
-    ~UdpOut()
-    {
-        if (fd >= 0) close(fd);
-    }
-    void flush()
-    {
-        while (df.next(pkt)) {
-            if (sendto(fd, pkt.data(), pkt.size(), 0, (const sockaddr*)&dst, sizeof(dst)) < 0)
-                send_err++;
-            packets++;
-            bytes += pkt.size();
-        }
-        bad  = df.bad;
-        lost = df.lost;
-    }
 };
 
 static void tx_worker(uhd::usrp::multi_usrp::sptr usrp, InputQueue* iq, double bytes_per_sample, size_t fill_frame,
@@ -581,105 +395,6 @@ static void print_tx(const std::vector<uint32_t>& s, const TxStats& tst, bool da
     fflush(g_log);
 }
 
-// ---------------------------------------------------------------- spectrum
-static void fft(std::vector<std::complex<float>>& a)
-{
-    const size_t n = a.size();
-    for (size_t i = 1, j = 0; i < n; i++) {
-        size_t bit = n >> 1;
-        for (; j & bit; bit >>= 1) j ^= bit;
-        j ^= bit;
-        if (i < j) std::swap(a[i], a[j]);
-    }
-    for (size_t len = 2; len <= n; len <<= 1) {
-        const double ang = -2.0 * M_PI / double(len);
-        const std::complex<float> wl(float(std::cos(ang)), float(std::sin(ang)));
-        for (size_t i = 0; i < n; i += len) {
-            std::complex<float> w(1.0f, 0.0f);
-            for (size_t k = 0; k < len / 2; k++) {
-                std::complex<float> u = a[i + k], v = a[i + k + len / 2] * w;
-                a[i + k]           = u + v;
-                a[i + k + len / 2] = u - v;
-                w *= wl;
-            }
-        }
-    }
-}
-// power spectrum in dBFS (full scale = 32767), fftshifted, Hann window
-static std::vector<float> power_spectrum(const std::vector<std::complex<float>>& x)
-{
-    const size_t n = x.size();
-    std::vector<std::complex<float>> a(n);
-    double wsum = 0.0;
-    for (size_t i = 0; i < n; i++) {
-        float w = 0.5f - 0.5f * float(std::cos(2.0 * M_PI * double(i) / double(n)));
-        a[i]    = x[i] * w;
-        wsum += w;
-    }
-    fft(a);
-    std::vector<float> p(n);
-    const double ref = 32767.0 * wsum;
-    for (size_t i = 0; i < n; i++)
-        p[i] = float(10.0 * std::log10(std::norm(a[(i + n / 2) % n]) / (ref * ref) + 1e-15));
-    return p;
-}
-
-// root-raised-cosine impulse response, t in symbols
-static double rrc(double t, double a)
-{
-    if (std::fabs(t) < 1e-9) return 1.0 - a + 4.0 * a / M_PI;
-    if (std::fabs(std::fabs(t) - 0.25 / a) < 1e-9)
-        return a / std::sqrt(2.0) * ((1 + 2 / M_PI) * std::sin(M_PI / (4 * a)) + (1 - 2 / M_PI) * std::cos(M_PI / (4 * a)));
-    return (std::sin(M_PI * t * (1 - a)) + 4 * a * t * std::cos(M_PI * t * (1 + a)))
-           / (M_PI * t * (1 - 16 * a * a * t * t));
-}
-
-// Blind SNR estimate for the web page (M2M4, valid for constant-modulus PSK: PLHEADER, pilots,
-// QPSK and 8PSK data).  x: DDC samples at 2 samples/symbol.  The RRC matched filter is evaluated
-// at 16 timing phases; the phase with the lowest normalised fourth moment kappa = M4 / M2^2 is the
-// best sampling instant.  kappa = 1: no noise, 2: noise only;  Es/N0 = s / (1 - s), s = sqrt(2 - kappa).
-// Independent of carrier phase and CFO, so it needs no synchronisation.
-static double psk_kappa(const std::vector<std::complex<float>>& x, double alpha)
-{
-    const int span = 8;                                // matched filter +-8 symbols
-    const int ns   = int(x.size()) / 2;
-    if (ns <= 2 * span + 16) return NAN;
-    double best = NAN;
-    for (int p = 0; p < 16; p++) {
-        double c[4 * span + 1];                        // y(k + p/16) = sum_m x[2k + m] h(p/16 - m/2)
-        for (int m = -2 * span; m <= 2 * span; m++) c[m + 2 * span] = rrc(p / 16.0 - m / 2.0, alpha);
-        double m2 = 0, m4 = 0;
-        int cnt = 0;
-        for (int k = span; k < ns - span; k++) {
-            std::complex<double> y = 0;
-            for (int m = -2 * span; m <= 2 * span; m++)
-                y += std::complex<double>(x[2 * k + m].real(), x[2 * k + m].imag()) * c[m + 2 * span];
-            const double e = std::norm(y);
-            m2 += e;
-            m4 += e * e;
-            cnt++;
-        }
-        m2 /= cnt;
-        m4 /= cnt;
-        if (m2 > 0 && !(m4 / (m2 * m2) >= best)) best = m4 / (m2 * m2);
-    }
-    return best;
-}
-static double esn0_db_of_kappa(double kappa)
-{
-    if (!(kappa < 2.0)) return NAN;                    // noise only (or no data)
-    const double s = std::sqrt(2.0 - kappa);           // signal power / total power
-    return s >= 0.9999 ? 40.0 : std::min(40.0, 10.0 * std::log10(s / (1.0 - s)));
-}
-// JSON number, null when not finite
-static std::string jnum(double v, int digits = 2)
-{
-    if (!std::isfinite(v)) return "null";
-    char b[32];
-    snprintf(b, sizeof b, "%.*f", digits, v);
-    return b;
-}
-
 // ---------------------------------------------------------------- run-time configuration
 struct Config {
     double tx_freq = 0, rx_freq = 0;
@@ -716,66 +431,8 @@ struct WebState {
 };
 static WebState g_web;
 
-static std::string url_decode(const std::string& s)
-{
-    std::string o;
-    for (size_t i = 0; i < s.size(); i++) {
-        if (s[i] == '+') o += ' ';
-        else if (s[i] == '%' && i + 2 < s.size()) {
-            o += char(std::stoi(s.substr(i + 1, 2), nullptr, 16));
-            i += 2;
-        } else o += s[i];
-    }
-    return o;
-}
-static std::map<std::string, std::string> parse_query(const std::string& q)
-{
-    std::map<std::string, std::string> kv;
-    std::stringstream ss(q);
-    std::string item;
-    while (std::getline(ss, item, '&')) {
-        size_t e = item.find('=');
-        if (e == std::string::npos) continue;
-        kv[url_decode(item.substr(0, e))] = url_decode(item.substr(e + 1));
-    }
-    return kv;
-}
-static void send_all(int fd, const std::string& s)
-{
-    size_t off = 0;
-    while (off < s.size()) {
-        ssize_t w = ::send(fd, s.data() + off, s.size() - off, MSG_NOSIGNAL);
-        if (w <= 0) return;
-        off += size_t(w);
-    }
-}
-static void reply(int fd, int code, const std::string& type, const std::string& body, const std::string& extra = "")
-{
-    const char* txt = code == 200 ? "OK" : code == 404 ? "Not Found" : code == 413 ? "Payload Too Large" : "Bad Request";
-    std::string h = "HTTP/1.1 " + std::to_string(code) + " " + txt + "\r\nContent-Type: " + type
-                    + "\r\nContent-Length: " + std::to_string(body.size()) + "\r\nCache-Control: no-store\r\n" + extra
-                    + "Connection: close\r\n\r\n";
-    send_all(fd, h + body);
-}
-static bool read_file(const std::string& path, std::string& out)
-{
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    out = ss.str();
-    return true;
-}
-static std::string safe_name(const std::string& n)
-{
-    std::string o;
-    for (char c : n)
-        o += (isalnum((unsigned char)c) || c == '.' || c == '-' || c == '_') ? c : '_';
-    if (o.empty() || o[0] == '.') o = "file" + o;
-    return o.substr(0, 100);
-}
-
 static const size_t MAX_UPLOAD = size_t(2) << 30;     // 2 GB (at ~300 kB/s that is ~2 h of air time)
+static const double BW_MIN = 100e3, BW_MAX = 5.2e6;  // occupied bandwidth range (web page / API)
 static void handle_client(int fd, const std::string& web_root, const std::string& file_dir)
 {
     std::string req;
@@ -900,57 +557,6 @@ static void handle_client(int fd, const std::string& web_root, const std::string
     }
 }
 
-static void web_server(int port, std::string bind_addr, std::string web_root, std::string file_dir)
-{
-    int s = ::socket(AF_INET, SOCK_STREAM, 0);
-    int one = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    sockaddr_in a{};
-    a.sin_family = AF_INET;
-    a.sin_port   = htons(uint16_t(port));
-    if (inet_pton(AF_INET, bind_addr.c_str(), &a.sin_addr) != 1 || ::bind(s, (sockaddr*)&a, sizeof(a)) != 0
-        || ::listen(s, 16) != 0) {
-        fprintf(stderr, "web: cannot listen on %s:%d (%s)\n", bind_addr.c_str(), port, strerror(errno));
-        stop_signal = true;
-        return;
-    }
-    timeval tv{0, 200000};
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));   // accept() wakes up to check stop_signal
-    fprintf(g_log, "web page: http://%s:%d/\n", bind_addr == "0.0.0.0" ? "localhost" : bind_addr.c_str(), port);
-    while (!stop_signal) {
-        int c = ::accept(s, nullptr, nullptr);
-        if (c < 0) continue;
-        timeval ct{10, 0};
-        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &ct, sizeof(ct));
-        try {
-            handle_client(c, web_root, file_dir);
-        } catch (const std::exception& e) {
-            fprintf(stderr, "web: %s\n", e.what());
-        }
-        ::close(c);
-    }
-    ::close(s);
-}
-
-static std::string exe_dir()
-{
-    char p[4096];
-    ssize_t n = readlink("/proc/self/exe", p, sizeof(p) - 1);
-    if (n <= 0) return ".";
-    p[n]          = 0;
-    std::string s = p;
-    return s.substr(0, s.find_last_of('/'));
-}
-static std::string jstr(const std::string& s)
-{
-    std::string o = "\"";
-    for (char c : s) {
-        if (c == '"' || c == '\\') o += '\\';
-        if ((unsigned char)c >= 0x20) o += c;
-    }
-    return o + "\"";
-}
-
 // ---------------------------------------------------------------- one streaming session
 // RF / rate setup, modem configuration and the TX/RX/reader threads.  A session is
 // restarted when the bandwidth (sample rate) or the TX payload source changes.
@@ -1069,7 +675,7 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         ("duration", po::value<double>(&duration)->default_value(0), "seconds to run (0 = until Ctrl-C)")
         ("web", po::value<int>(&web_port)->default_value(0), "web page on this TCP port (0 = off)")
         ("web-bind", po::value<std::string>(&web_bind)->default_value("127.0.0.1"), "web: address to listen on (0.0.0.0 = all)")
-        ("web-root", po::value<std::string>(&web_root)->default_value(""), "web: directory with index.html (default <program>/../web)")
+        ("web-root", po::value<std::string>(&web_root)->default_value(""), "web: directory with index.html (default <program>/../web, else host_common/web of the source tree)")
         ("file-dir", po::value<std::string>(&file_dir)->default_value("dvbs2_files"), "web: directory for sent / received files");
     // clang-format on
     po::variables_map vm;
@@ -1161,11 +767,13 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
     else if (web && !has_const)
         fprintf(g_log, "note: this FPGA image has no constellation snapshot (version < 2.2), the web page shows no constellation\n");
     if (web) mkdir(file_dir.c_str(), 0755);
-    if (web_root.empty()) web_root = exe_dir() + "/../web";
+    if (web_root.empty()) web_root = default_web_root(exe_dir() + "/../web");
 
     std::signal(SIGINT, &sig_int_handler);
     std::thread tweb;
-    if (web) tweb = std::thread(web_server, web_port, web_bind, web_root, file_dir);
+    if (web)
+        tweb = std::thread(web_server, web_port, web_bind, "localhost",
+            [web_root, file_dir](int fd) { handle_client(fd, web_root, file_dir); });
 
     // ---- session start: RF, rates, modem registers, threads
     Session S;
@@ -1431,7 +1039,11 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         const double level_dbfs = S.do_rx && level_avg > 0 ? 10.0 * std::log10(level_avg / (32767.0 * 32767.0)) : NAN;
         std::ostringstream j;
         j.precision(10);
-        j << "{\"fpga\":{\"version\":\"" << (s[31] >> 16) << "." << (s[31] & 0xFFFF) << "\",\"spectrum\":"
+        j << "{\"board\":\"USRP B210\",\"caps\":{\"modem_cfg\":false,\"udp\":false,\"shared_fs\":false"
+          << ",\"bw_min\":" << BW_MIN << ",\"bw_max\":" << BW_MAX << ",\"rx_gain_max\":76,\"max_upload\":" << MAX_UPLOAD
+          << ",\"const_fpga\":\"2.2\",\"level_src\":\"DDC output\",\"tx_under\":\"Underflow DUC / USB\""
+          << ",\"rx_over\":\"USB overflow\",\"duc_bad\":false},";
+        j << "\"fpga\":{\"version\":\"" << (s[31] >> 16) << "." << (s[31] & 0xFFFF) << "\",\"spectrum\":"
           << (has_cap ? "true" : "false") << ",\"constellation\":" << (has_const ? "true" : "false") << "},";
         j << "\"update_ms\":" << update_ms << ",";
         j << "\"uptime\":" << std::chrono::duration<double>(std::chrono::steady_clock::now() - S.t0).count() << ",";
@@ -1544,10 +1156,10 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
                         cfg.rx_gain = v;
                         usrp->set_rx_gain(v, 0);
                         act.rx_gain = usrp->get_rx_gain(0);
-                    } else if (k == "tx_bw" && v != cfg.tx_bw && v >= 100e3 && v <= 5.2e6) {
+                    } else if (k == "tx_bw" && v != cfg.tx_bw && v >= BW_MIN && v <= BW_MAX) {
                         cfg.tx_bw = v;
                         restart   = true;
-                    } else if (k == "rx_bw" && v != cfg.rx_bw && v >= 100e3 && v <= 5.2e6) {
+                    } else if (k == "rx_bw" && v != cfg.rx_bw && v >= BW_MIN && v <= BW_MAX) {
                         cfg.rx_bw = v;
                         restart   = true;
                     } else if (k == "tx_on" && do_tx && (v != 0) != tx_on) {

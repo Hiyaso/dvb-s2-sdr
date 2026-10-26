@@ -16,7 +16,7 @@ bw = 1.35e6
 udp-in = 127.0.0.1:15000
 udp-out = 127.0.0.1:15001
 EOF
-./build/dvbs2_adrv_mock --config "$T/dvbs2.conf" --web-root ./web --file-dir "$T" > "$T/log" 2>&1 &
+./build/dvbs2_adrv_mock --config "$T/dvbs2.conf" --file-dir "$T" > "$T/log" 2>&1 &
 PID=$!
 sleep 1.5
 python3 - "$T" <<'EOF'
@@ -29,7 +29,10 @@ ok = True
 s = json.loads(get('/api/status'))
 print('status: board %s fpga %s, tx %s rx %s, data %s' % (s['board'], s['fpga']['version'], s['tx']['mode'], s['rx']['mode'], s['config']['data']))
 ok &= s['tx']['mode'] == 'udp' and s['rx']['mode'] == 'udp'
-ok &= b'DVB-S2 Modem' in get('/')
+c = s['caps']
+print('caps: modem_cfg %s udp %s shared_fs %s, bw %.3f..%.3f MHz' % (c['modem_cfg'], c['udp'], c['shared_fs'], c['bw_min'] / 1e6, c['bw_max'] / 1e6))
+ok &= c['modem_cfg'] and c['udp'] and c['shared_fs'] and 0 < c['bw_min'] < 1.35e6 < c['bw_max']
+ok &= b'DVB-S2 Modem' in get('/') and b'applyCaps' in get('/')   # shared page host_common/web (default web root)
 # UDP link: 1500 datagrams of 1..1400 bytes at ~150 kB/s (8PSK 2/3 capacity at 1 Msym/s ~236 kB/s)
 import threading, queue
 rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); rx.bind(('127.0.0.1', 15001))

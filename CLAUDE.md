@@ -30,8 +30,9 @@ README.md, z7020/README.md, b210/README.md and adrv9364/README.md are user-facin
 | `b210/sim/` | `tb_b210.v` + `reg_b210.sh` (outputs in `b210/sim/out/`) |
 | `adrv9364/rtl/` | `dvbs2_adrv` wrapper (AXI-Lite 0x44A00000, 16 kB payload FIFOs, CDC FIFOs to l_clk, spectrum / constellation snapshot) |
 | `adrv9364/hdl/` | ADI project files copied into `<adi-hdl>/projects/adrv9364z7020/dvbs2/` (block design insertion, SOM-only top, CDC xdc) |
-| `adrv9364/` | `build_fpga.sh` (ADI HDL + Vivado → BOOT.BIN), `make_sd_image.sh` (Kuiper image + service, no root: mtools/debugfs), `lib.sh`, `sw/` (ARM program, web UI, mock test), `rootfs/`, `sim/` |
-| `b210/` | `patch_uhd_fpga.py` (copies `rtl/{common,gen,tx,rx}` + `b210/rtl` into UHD), `build_fpga.sh` (ISE), `host/dvbs2_b210.cpp` (UHD C++ PC program) + `host/web/index.html` |
+| `adrv9364/` | `build_fpga.sh` (ADI HDL + Vivado → BOOT.BIN), `make_sd_image.sh` (Kuiper image + service, no root: mtools/debugfs), `lib.sh`, `sw/` (ARM program, mock test), `rootfs/`, `sim/` |
+| `host_common/` | header-only code shared by `b210/host/dvbs2_b210.cpp` and `adrv9364/sw/dvbs2_adrv.cpp`: `udp_frame.hpp`, `net_udp.hpp` (UdpIn/UdpOut), `file_xfer.hpp` (file header, FileSink, InputQueue), `dsp_util.hpp` (FFT, spectrum, M2M4 Es/N0), `mini_http.hpp` (HTTP helpers, `web_server` with a per-program request handler), `dvbs2_common.hpp` (MODCOD tables, `running()` / `g_log`), `web/index.html` (one web page for both programs; board differences from `/api/status` `board` + `caps`, `default_web_root()` falls back to this directory when the program runs from its build dir) |
+| `b210/` | `patch_uhd_fpga.py` (copies `rtl/{common,gen,tx,rx}` + `b210/rtl` into UHD), `build_fpga.sh` (ISE), `host/dvbs2_b210.cpp` (UHD C++ PC program) |
 
 `sim/vl.sh <tb>` finds `<tb>.v` in `sim/tb`, `b210/sim`, `z7020/sim` or `adrv9364/sim` and, for a board testbench, also compiles that project's `rtl/`.
 
@@ -105,7 +106,7 @@ Long jobs (`run_all.sh`, Vivado/ISE builds, BER sweeps) should run in the backgr
 * `patch_uhd_fpga.py` is idempotent (patches from `*.orig`, marker `DVBS2-PATCH`); new make target `B210_DVBS2`.
 * Host ↔ FPGA: user settings regs (device arg `enable_user_regs`, `poke32(4*n)`, `peek64(8*m)` → status words 2m/2m+1, ID word 30 = 0x44564232).
   Payload bytes ride in sc16 samples: TX `I[8]` valid + `I[7:0]` byte; RX `I[9]` frame end, `I[8]` valid, `I[7:0]` byte, `Q` = 16-bit seq.
-* UDP mode (`--udp-in` / `--udp-out`, host only): each datagram framed as in `host/udp_frame.hpp` (sync C5 3A, len, seq, CRC-16, data, CRC-32);
+* UDP mode (`--udp-in` / `--udp-out`, host only): each datagram framed as in `host_common/udp_frame.hpp` (sync C5 3A, len, seq, CRC-16, data, CRC-32);
   TX zero-fills the current BBFRAME when its queue is empty (BBFRAME = DFL/8 bytes, FIFO reset at session start keeps the count aligned).
 * File mode: TX sends `--preamble` seconds of zeros, then header (magic `A5 'DVBS2' 5A C3`, u64 len, ~len), then the file; RX writes only after the header and stops after len bytes.
 * RX decodes MODCOD/pilots from the PLHEADER; only roll-off (and Rs, frequency) must match TX.

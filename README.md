@@ -64,6 +64,7 @@ RX  dvbs2_rx
 | `z7020/` | Zynq-7020 專案：頂層 RTL（`z7020/rtl`）、Vivado／Vitis 腳本、PS 軟體、AXI-Lite 暫存器表、Windows 批次檔 |
 | `b210/` | USRP B210 專案：B210 外殼 RTL（`b210/rtl`）、UHD FPGA patch 與 ISE 建置、PC 程式與網頁介面、雙板模擬 |
 | `adrv9364/` | ADRV9364-Z7020 SOM 專案：PL 外殼 RTL（`adrv9364/rtl`）、ADI HDL 專案檔、FPGA 與 SD 卡 image 建置、SOM 上的程式與網頁、雙板模擬 |
+| `host_common/` | B210 PC 程式和 ADRV9364 SOM 程式共用的 header：UDP 成框、檔案傳輸、頻譜／SNR 估計、迷你 HTTP 伺服器；`web/index.html` 是兩邊共用的網頁（依 `/api/status` 的 `board`／`caps` 顯示各板的功能） |
 
 ## 模擬
 

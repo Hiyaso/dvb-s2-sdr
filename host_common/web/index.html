@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DVB-S2 B210</title>
+<title>DVB-S2</title>
+<!-- One page for dvbs2_b210 (PC + USRP B210) and dvbs2_adrv (ADRV9364 SOM); board differences come from
+     /api/status "board" and "caps" (see applyCaps) -->
+
 <style>
 :root {
   --bg: #f4f5f7; --card: #ffffff; --fg: #1c2330; --muted: #677285; --line: #dde1e8;
@@ -32,9 +35,13 @@ main { padding: 16px 20px 32px; display: grid; gap: 16px; grid-template-columns:
 .wide { grid-column: 1 / -1; }
 .form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: end; }
 label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
-input[type=number] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+input[type=number], input[type=text], select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
                      background: var(--bg); color: var(--fg); font: inherit; font-variant-numeric: tabular-nums; }
-input[type=number]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+input[type=number]:focus, input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.chk { display: flex; gap: 6px; align-items: center; padding: 6px 0; }
+.mode { display: inline-flex; border: 1px solid var(--accent); border-radius: 6px; overflow: hidden; }
+.mode button { border: 0; border-radius: 0; background: transparent; color: var(--accent); }
+.mode button.sel { background: var(--accent); color: #fff; }
 button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent);
          color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
 button.ghost { background: transparent; color: var(--accent); }
@@ -103,8 +110,8 @@ details.tbl th { color: var(--muted); font-weight: 600; }
 </head>
 <body>
 <header>
-  <h1>DVB-S2 Loopback Test</h1>
-  <span class="sub" id="sub">USRP B210</span>
+  <h1>DVB-S2 Modem</h1>
+  <span class="sub" id="sub"></span>
   <div class="right"><span class="pill" id="conn">Connecting…</span><span class="pill" id="lockpill">RX —</span></div>
 </header>
 <main>
@@ -128,7 +135,7 @@ details.tbl th { color: var(--muted); font-weight: 600; }
     <h2>TX Transmit <button class="onoff" id="tx_onoff" onclick="toggle('tx')" aria-pressed="false">Off</button></h2>
     <div class="form">
       <div><label for="tx_freq">Frequency (MHz)</label><input id="tx_freq" type="number" step="0.001"></div>
-      <div><label for="tx_bw">Bandwidth (MHz)</label><input id="tx_bw" type="number" step="0.001" min="0.1" max="5.2"></div>
+      <div><label for="tx_bw">Bandwidth (MHz)</label><input id="tx_bw" type="number" step="0.001" min="0.4" max="8.4"></div>
       <div><label for="tx_gain">Gain (dB)</label><input id="tx_gain" type="number" step="0.5" min="0" max="89.75"></div>
     </div>
     <div class="actions"><button onclick="apply('tx')">Apply TX</button>
@@ -140,12 +147,45 @@ details.tbl th { color: var(--muted); font-weight: 600; }
     <h2>RX Receive <button class="onoff" id="rx_onoff" onclick="toggle('rx')" aria-pressed="false">Off</button></h2>
     <div class="form">
       <div><label for="rx_freq">Frequency (MHz)</label><input id="rx_freq" type="number" step="0.001"></div>
-      <div><label for="rx_bw">Bandwidth (MHz)</label><input id="rx_bw" type="number" step="0.001" min="0.1" max="5.2"></div>
-      <div><label for="rx_gain">Gain (dB)</label><input id="rx_gain" type="number" step="0.5" min="0" max="76"></div>
+      <div><label for="rx_bw">Bandwidth (MHz)</label><input id="rx_bw" type="number" step="0.001" min="0.4" max="8.4"></div>
+      <div><label for="rx_gain">Gain (dB)</label><input id="rx_gain" type="number" step="0.5" min="0" max="73"></div>
     </div>
     <div class="actions"><button onclick="apply('rx')">Apply RX</button>
       <span class="hint" id="rx_hint"></span></div>
     <dl id="rx_rf"></dl>
+  </section>
+
+  <section class="card" id="modem_card" hidden>
+    <h2>Modem</h2>
+    <div class="form">
+      <div><label for="modcod">MODCOD (TX)</label><select id="modcod">
+        <option value="1">QPSK 1/4</option><option value="2">QPSK 1/3</option><option value="3">QPSK 2/5</option>
+        <option value="4">QPSK 1/2</option><option value="5">QPSK 3/5</option><option value="6">QPSK 2/3</option>
+        <option value="7">QPSK 3/4</option><option value="8">QPSK 4/5</option><option value="9">QPSK 5/6</option>
+        <option value="10">QPSK 8/9</option><option value="12">8PSK 3/5</option><option value="13">8PSK 2/3</option>
+        <option value="14">8PSK 3/4</option><option value="15">8PSK 5/6</option><option value="16">8PSK 8/9</option></select></div>
+      <div><label for="rolloff">Roll-off (TX and RX)</label><select id="rolloff">
+        <option value="35">0.35</option><option value="25">0.25</option><option value="20">0.20</option></select></div>
+      <div><label for="max_iter">LDPC iterations</label><input id="max_iter" type="number" min="1" max="50" step="1"></div>
+      <div class="chk"><input type="checkbox" id="pilots"><label for="pilots" style="margin:0">Pilots (TX)</label></div>
+    </div>
+    <div class="actions"><button onclick="applyModem()">Apply modem</button>
+      <span class="hint" id="modem_hint"></span></div>
+    <p class="hint">The receiver detects MODCOD and pilots from the PLHEADER; only the roll-off and the bandwidth must match the transmitter. Changing them restarts TX and RX.</p>
+  </section>
+
+  <section class="card" id="udp_card" hidden>
+    <h2>Data Link (UDP)</h2>
+    <div class="actions" style="margin-top:0"><span class="mode"><button id="m_prbs" onclick="post('/api/prbs')">PRBS test</button><button id="m_udp" onclick="post('/api/udp')">UDP data</button></span>
+      <span class="hint" id="mode_hint"></span></div>
+    <div class="form" style="grid-template-columns: 1fr 1fr; margin-top:10px">
+      <div><label for="udp_in">TX: receive datagrams on [addr:]port</label><input id="udp_in" type="text" placeholder="0.0.0.0:5000"></div>
+      <div><label for="udp_out">RX: send datagrams to host:port</label><input id="udp_out" type="text" placeholder="192.168.30.255:5001"></div>
+    </div>
+    <div class="actions"><button onclick="applyUdp()">Apply UDP</button>
+      <button class="ghost" onclick="saveCfg()">Save settings (used at boot)</button>
+      <span class="hint" id="udp_hint"></span></div>
+    <dl id="udp_stat"></dl>
   </section>
 
   <div class="wide specrow">
@@ -167,11 +207,12 @@ details.tbl th { color: var(--muted); font-weight: 600; }
       <button id="send" onclick="sendFile()">Send file</button>
       <span class="hint" id="up_hint"></span>
       <button class="ghost" onclick="post('/api/prbs')">Back to PRBS test</button>
+      <button class="ghost" id="back_udp" onclick="post('/api/udp')" hidden>Back to UDP data</button>
       <a id="dl" class="hint" href="/api/received" style="display:none">Download received file</a>
     </div>
     <dl id="file_stat"></dl>
     <div style="margin-top:10px"><progress id="prog" max="1" value="0"></progress></div>
-    <p class="hint">Bandwidth = occupied bandwidth Rs·(1+roll-off); the symbol rate is derived from it. Changing the bandwidth restarts the streams (a file in progress is resent); frequency and gain take effect immediately.</p>
+    <p class="hint" id="file_hint"></p>
   </section>
 
   <section class="card wide bb">
@@ -185,6 +226,24 @@ details.tbl th { color: var(--muted); font-weight: 600; }
 <script>
 const $ = id => document.getElementById(id);
 let cfgLoaded = false, last = null;
+// board capabilities, from the first /api/status (defaults: B210 behaviour of a program without "caps")
+let caps = {modem_cfg: false, udp: false, shared_fs: false, bw_min: 0.1e6, bw_max: 5.2e6, rx_gain_max: 76,
+            max_upload: 2 * 1024 ** 3, const_fpga: '2.2', level_src: 'DDC output',
+            tx_under: 'Underflow DUC / USB', rx_over: 'USB overflow', duc_bad: false};
+function applyCaps(s) {                  // every status: the ADRV9364 bandwidth range follows the roll-off
+  caps = Object.assign(caps, s.caps || {});
+  document.title = 'DVB-S2 ' + (s.board || '');
+  $('modem_card').hidden = !caps.modem_cfg;
+  $('udp_card').hidden = $('back_udp').hidden = !caps.udp;
+  for (const side of ['tx', 'rx']) { $(side + '_bw').min = caps.bw_min / 1e6; $(side + '_bw').max = caps.bw_max / 1e6; }
+  $('rx_gain').max = caps.rx_gain_max;
+  const hint = 'File loopback needs TX and RX of this board connected (cable + attenuator). ' +
+    `Bandwidth = occupied bandwidth Rs·(1+roll-off), ${fmt(caps.bw_min / 1e6, 2)} … ${fmt(caps.bw_max / 1e6, 2)} MHz; ` +
+    (caps.shared_fs ? 'TX and RX share one sample rate (2 × Rs), so the bandwidth applies to both. '
+                    : 'the symbol rate is derived from it. ') +
+    'Changing it restarts the streams (a file in progress is resent); frequency and gain take effect immediately.';
+  if ($('file_hint').textContent !== hint) $('file_hint').textContent = hint;
+}
 
 function fmt(v, d = 0) { return (v === undefined || v === null || isNaN(v)) ? '—' : Number(v).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d}); }
 function mhz(v, d = 3) { return fmt(v / 1e6, d) + ' MHz'; }
@@ -218,9 +277,27 @@ async function apply(side) {
   const p = new URLSearchParams();
   p.set(side + '_freq', $(side + '_freq').value * 1e6);
   p.set(side + '_bw', $(side + '_bw').value * 1e6);
+  if (caps.shared_fs) $(side === 'tx' ? 'rx_bw' : 'tx_bw').value = $(side + '_bw').value;   // one sample rate for TX and RX
   p.set(side + '_gain', $(side + '_gain').value);
   $(side + '_hint').textContent = (await post('/api/config', p)) ? 'Sent' : 'Failed';
   setTimeout(() => $(side + '_hint').textContent = '', 2500);
+}
+async function applyModem() {
+  const p = new URLSearchParams();
+  p.set('modcod', $('modcod').value); p.set('rolloff', $('rolloff').value);
+  p.set('pilots', $('pilots').checked ? 1 : 0); p.set('max_iter', $('max_iter').value);
+  $('modem_hint').textContent = (await post('/api/config', p)) ? 'Sent (TX/RX restart)' : 'Failed';
+  setTimeout(() => $('modem_hint').textContent = '', 3000);
+}
+async function applyUdp() {
+  const p = new URLSearchParams();
+  p.set('udp_in', $('udp_in').value.trim()); p.set('udp_out', $('udp_out').value.trim());
+  $('udp_hint').textContent = (await post('/api/config', p)) ? 'Sent' : 'Failed (empty?)';
+  setTimeout(() => $('udp_hint').textContent = '', 3000);
+}
+async function saveCfg() {
+  $('udp_hint').textContent = (await post('/api/save')) ? 'Saving…' : 'Failed';
+  setTimeout(() => $('udp_hint').textContent = last && last.config.saved ? last.config.saved : '', 1500);
 }
 // TX / RX on-off (off when the program starts); the button follows the state reported by the program
 const busy = {tx: 0, rx: 0};
@@ -249,13 +326,14 @@ function showOnOff(side, on) {
   $(side + '_card').classList.toggle('off', !on);
   $(side + '_bbcol').classList.toggle('off', !on);
 }
-const MAX_UPLOAD = 2 * 1024 ** 3;          // must match MAX_UPLOAD in dvbs2_b210.cpp
 let uploading = false;
 function sendFile() {
   if (last && !(last.tx.on && last.rx.on)) { alert('Turn on TX and RX first'); return; }
   const f = $('file').files[0];
   if (!f) { alert('Choose a file to send first'); return; }
-  if (f.size > MAX_UPLOAD) { alert(`File too large: ${fmt(f.size / 1048576, 1)} MB (limit 2048 MB)`); return; }
+  if (f.size > caps.max_upload) {            // caps.max_upload = MAX_UPLOAD of the program
+    alert(`File too large: ${fmt(f.size / 1048576, 1)} MB (limit ${fmt(caps.max_upload / 1048576)} MB)`); return;
+  }
   if (f.size === 0) { alert('The file is empty'); return; }
   uploading = true;
   $('send').disabled = true;
@@ -305,7 +383,7 @@ function renderRf(rx) {
     ['Eb/N0', lk && has(rx.ebn0_db) ? fmt(rx.ebn0_db, 1) : '—', 'dB', 'Per information bit (when locked)', lk && has(rx.ebn0_db) ? '' : 'dim'],
     ['RSSI', has(rx.rssi_db) ? fmt(rx.rssi_db, 2) : '—', 'dB', 'AD9361, relative, not dBm', has(rx.rssi_db) ? '' : 'dim'],
     ['Signal level', has(rx.level_dbfs) ? fmt(rx.level_dbfs, 1) : '—', 'dBFS',
-     hot ? '⚠ Near saturation, lower the RX gain' : 'DDC output (incl. noise)', !has(rx.level_dbfs) ? 'dim' : hot ? 'bad' : ''],
+     hot ? '⚠ Near saturation, lower the RX gain' : caps.level_src + ' (incl. noise)',!has(rx.level_dbfs) ? 'dim' : hot ? 'bad' : ''],
     ['Frequency offset (CFO)', lk ? fmt(cfoK ? rx.cfo_hz / 1e3 : rx.cfo_hz, cfoK ? 2 : 1) : '—', cfoK ? 'kHz' : 'Hz',
      lk && rx.freq ? `${fmt(rx.cfo_hz / rx.freq * 1e6, 3)} ppm of RX frequency` : 'Shown when locked', lk ? '' : 'dim'],
   ]);
@@ -314,12 +392,31 @@ function renderRf(rx) {
 
 function render(s) {
   const tx = s.tx, rx = s.rx, c = s.config;
+  applyCaps(s);
   if (!cfgLoaded) {
     for (const k of ['tx_freq', 'rx_freq', 'tx_bw', 'rx_bw']) $(k).value = (c[k] / 1e6).toFixed(3);
     $('tx_gain').value = c.tx_gain; $('rx_gain').value = c.rx_gain;
+    if (caps.modem_cfg) {
+      $('modcod').value = c.modcod_n; $('rolloff').value = Math.round(c.rolloff * 100);
+      $('pilots').checked = c.pilots; $('max_iter').value = c.max_iter;
+    }
+    if (caps.udp) { $('udp_in').value = c.udp_in; $('udp_out').value = c.udp_out; }
     cfgLoaded = true;
   }
-  $('sub').textContent = `USRP B210 · FPGA ${s.fpga.version} · ${c.modcod}${c.pilots ? ' pilots' : ''} · roll-off ${c.rolloff}`;
+  $('sub').textContent = `${s.board} · FPGA ${s.fpga.version} · ${c.modcod}${c.pilots ? ' pilots' : ''} · roll-off ${c.rolloff}`;
+  if (caps.udp) {
+    $('m_prbs').className = c.data === 'prbs' && tx.mode !== 'file' ? 'sel' : '';
+    $('m_udp').className = c.data === 'udp' && tx.mode !== 'file' ? 'sel' : '';
+    $('mode_hint').textContent = tx.mode === 'file' ? 'File loopback running' : '';
+    stat('udp_stat', [
+      ['TX datagrams in', tx.mode === 'udp' ? `${fmt(tx.udp_packets)} (${fmt(tx.udp_bytes)} B)` : '—'],
+      ['TX dropped (link too slow)', tx.mode === 'udp' ? fmt(tx.udp_drops) : '—', tx.udp_drops ? 'result bad' : ''],
+      ['TX idle fill', tx.mode === 'udp' ? fmt(tx.fill) + ' B' : '—'],
+      ['RX datagrams out', rx.mode === 'udp' ? `${fmt(rx.udp_packets)} (${fmt(rx.udp_bytes)} B)` : '—'],
+      ['RX lost / bad CRC', rx.mode === 'udp' ? `${fmt(rx.udp_lost)} / ${fmt(rx.udp_bad)}` : '—', rx.udp_lost || rx.udp_bad ? 'result bad' : ''],
+      ['Saved', c.saved || '—'],
+    ]);
+  }
   const lp = $('lockpill');
   lp.textContent = rx.on ? (rx.lock ? 'RX locked' : 'RX not locked') : 'RX off';
   lp.className = 'pill ' + (!rx.on ? '' : rx.lock ? 'ok' : 'bad');
@@ -327,27 +424,32 @@ function render(s) {
   $('send').disabled = uploading || !(tx.on && rx.on);
   $('send').title = (tx.on && rx.on) ? '' : 'Turn on TX and RX first';
   renderRf(rx);
+  // modem clock: B210 master clock (tx.mcr, chosen per session), ADRV9364 fixed 100 MHz (caps.clk_hz)
+  const clk = tx.mcr || caps.clk_hz;
+  const fsRow = fs => fmt(fs / 1e6, 4) + ' MS/s (' + fmt(clk / fs, 1) + ' clk/sample' +
+                      (tx.mcr ? ', master clock ' + fmt(tx.mcr / 1e6, 3) + ' MHz)' : ')');
   stat('tx_rf', [
     ['Center frequency', mhz(tx.freq, 6)],
     ['Symbol rate', fmt(tx.rs / 1e3, 1) + ' ksym/s'],
-    ['Sample rate / master clock', fmt(tx.fs / 1e6, 4) + ' / ' + fmt(tx.mcr / 1e6, 3) + ' MHz'],
+    ['Sample rate', fsRow(tx.fs)],
     ['Analog filter bandwidth', mhz(tx.analog_bw, 3)],
     ['Gain', fmt(tx.gain, 1) + ' dB'],
   ]);
   stat('rx_rf', [
     ['Center frequency', mhz(rx.freq, 6)],
     ['Symbol rate', fmt(rx.rs / 1e3, 1) + ' ksym/s'],
-    ['Sample rate / master clock', fmt(rx.fs / 1e6, 4) + ' / ' + fmt(tx.mcr / 1e6, 3) + ' MHz'],
+    ['Sample rate', fsRow(rx.fs)],
     ['Analog filter bandwidth', mhz(rx.analog_bw, 3)],
     ['Gain', fmt(rx.gain, 1) + ' dB'],
   ]);
   stat('tx_bb', [
     ['Data rate (every 0.5 s)', tx.on ? bps(capRate(tx.rate_bps, tx.capacity_bps)) : '—'],
     ['MODCOD capacity', tx.on ? usage(tx.rate_bps, tx.capacity_bps) : '—'],
-    ['Data source', tx.mode === 'file' ? 'File ' + tx.file : 'PRBS-23 (FPGA)'],
+    ['Data source', tx.mode === 'file' ? 'File ' + tx.file : tx.mode === 'udp' ? 'UDP ' + c.udp_in : 'PRBS-23 (FPGA)'],
     ['Frames encoded / sent', fmt(tx.frames_encoded) + ' / ' + fmt(tx.frames_sent)],
     ['Dummy frames', fmt(tx.dummy)],
-    ['Underflow DUC / USB', fmt(tx.duc_underflow) + ' / ' + fmt(tx.host_underflow), tx.host_underflow ? 'result bad' : ''],
+    [caps.tx_under, fmt(tx.duc_underflow) + ' / ' + fmt(tx.host_underflow),
+     (caps.duc_bad && tx.duc_underflow) || tx.host_underflow ? 'result bad' : ''],
   ]);
   const ber = rx.ber_bits ? rx.ber_errors / rx.ber_bits : NaN;
   stat('rx_bb', [
@@ -359,8 +461,8 @@ function render(s) {
     ['LDPC iterations / dropped', `${rx.ldpc_iters} / ${fmt(rx.ldpc_drop)}`],
     ['BCH corrected / failed', `${fmt(rx.bch_corr)} / ${fmt(rx.bch_fail)}`, rx.bch_fail ? 'result bad' : ''],
     ['BBFRAME OK / CRC error', `${fmt(rx.bb_ok)} / ${fmt(rx.bb_crc)}`],
-    ['BER', rx.mode === 'prbs' ? (rx.ber_lock ? `${ber.toExponential(2)} (${fmt(rx.ber_errors)}/${fmt(rx.ber_bits)})` : 'Not synced') : 'File mode'],
-    ['USB overflow', fmt(rx.host_overflow), rx.host_overflow ? 'result bad' : ''],
+    ['BER', rx.mode === 'prbs' ? (rx.ber_lock ? `${ber.toExponential(2)} (${fmt(rx.ber_errors)}/${fmt(rx.ber_bits)})` : 'Not synced') : rx.mode === 'udp' ? 'UDP mode' : 'File mode'],
+    [caps.rx_over, fmt(rx.host_overflow),rx.host_overflow ? 'result bad' : ''],
   ]);
   const fs = ['Waiting for header', 'Receiving', 'Done'][rx.file_state] || '—';
   const res = rx.result || '';
@@ -374,7 +476,7 @@ function render(s) {
     ['Time remaining (est.)', rx.file_state === 1 && rx.file_len && rx.file_bps > 0 ? dur((rx.file_len - rx.file_written) * 8 / rx.file_bps) : '—'],
     ['Sequence gaps', fmt(rx.seq_gaps), rx.seq_gaps ? 'result bad' : ''],
     ['Comparison', res || '—', res.startsWith('identical') ? 'result ok' : res ? 'result bad' : ''],
-  ] : [['Mode', (tx.on && rx.on) ? 'PRBS test (choose a file and press "Send file" to start a file loopback)' : 'File transfer needs TX and RX on'],
+  ] : [['Mode', (tx.on && rx.on) ? (c.data === 'udp' ? 'UDP data' : 'PRBS test') + ' (choose a file and press "Send file" to start a file loopback)' : 'File transfer needs TX and RX on'],
         ...(res ? [['Message', res, 'result bad']] : [])]);
   $('prog').value = rx.file_len ? rx.file_written / rx.file_len : 0;
   addRatePoint(rx);
@@ -408,7 +510,7 @@ function drawSpectrum(sp) {
   }
   const span = sp.fs, n = db.length;
   g.textAlign = 'center'; g.textBaseline = 'top';
-  const step = span / 1e6 > 4 ? 1e6 : span / 1e6 > 1.5 ? 0.5e6 : 0.25e6;
+  const step = span / 1e6 > 8 ? 2e6 : span / 1e6 > 4 ? 1e6 : span / 1e6 > 1.5 ? 0.5e6 : 0.25e6;
   for (let f = -Math.floor(span / 2 / step) * step; f <= span / 2; f += step) {
     const x = L + (f / span + 0.5) * pw;
     g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
@@ -451,7 +553,7 @@ function drawConstellation(sp) {
   const rx = last && last.rx;
   if (!n) {
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(rx && !rx.on ? 'RX is off' : last && !last.fpga.constellation ? 'Needs FPGA image 2.2 or later'
+    g.fillText(rx && !rx.on ? 'RX is off' : last && !last.fpga.constellation ? `Needs FPGA image ${caps.const_fpga} or later`
                : rx && !rx.lock ? 'RX not locked' : 'Waiting for symbols…', cx, cy + 0.5 * k);
     $('const_info').textContent = '';
     return;

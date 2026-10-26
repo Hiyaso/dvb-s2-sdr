@@ -34,3 +34,7 @@ adrv9364/adi-hdl/
 adrv9364/out/
 adrv9364/sw/build/
 adrv9364/sim/out/
+
+# graphify
+graphify-out/
+

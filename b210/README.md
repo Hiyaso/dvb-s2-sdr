@@ -24,8 +24,8 @@ B210 FPGA radio 0                               B210 FPGA radio 0
 | `patch_uhd_fpga.py` | 把 DVB-S2 加進 UHD 原始碼的 B210 FPGA，並新增 `make B210_DVBS2` 目標 |
 | `build_fpga.sh` | 一鍵完成：抓和已安裝版本相同的 UHD 原始碼 → patch → 用 ISE 編譯 |
 | `host/dvbs2_b210.cpp` | PC 端程式（UHD C++），用 `host/build.sh` 編譯；`--web` 時內建網頁伺服器 |
-| `host/udp_frame.hpp` | UDP 封包在 DVB-S2 位元組串流裡的成框／還原（`--udp-in`／`--udp-out`） |
-| `host/web/index.html` | 網頁介面（解碼速率、SNR／RSSI／CFO、解碼速率圖、TX／RX 設定、頻譜、星座圖、傳檔、基頻狀態） |
+| `../host_common/` | 和 ADRV9364 SOM 程式共用的 header：`udp_frame.hpp`（UDP 封包在 DVB-S2 位元組串流裡的成框／還原，`--udp-in`／`--udp-out`）、`net_udp.hpp`、`file_xfer.hpp`、`dsp_util.hpp`、`mini_http.hpp` |
+| `../host_common/web/index.html` | 網頁介面，和 ADRV9364 共用（解碼速率、SNR／RSSI／CFO、解碼速率圖、TX／RX 設定、頻譜、星座圖、傳檔、基頻狀態；數據機設定與 UDP 卡片 B210 不顯示）。程式預設先找 `<程式>/../web`，沒有就用原始碼樹裡的 `host_common/web` |
 | `sim/reg_b210.sh`、`sim/tb_b210.v` | 模擬：兩台「B210」中間接通道模型，PRBS 和檔案傳輸兩種模式都測 |
 
 ## 需要的東西
@@ -119,7 +119,7 @@ RX LOCK 8PSK 2/3 pil FLL3 CFO   +2315.4 Hz | frames 812 miss 0 | LDPC it  6 drop
 ./dvbs2_b210 --mode tx --fpga usrp_b210_dvbs2_fpga.bin --udp-in 5000
 ```
 * 每個 UDP 封包單獨成框，RX 還原後**原封包**（同樣邊界、同樣長度，0–65535 B）送出：
-  `C5 3A | 長度 u16 | 封包序號 u16 | CRC-16（長度＋序號）| 資料 | CRC-32（資料）`，大端序，每包多 12 位元組（`host/udp_frame.hpp`）。
+  `C5 3A | 長度 u16 | 封包序號 u16 | CRC-16（長度＋序號）| 資料 | CRC-32（資料）`，大端序，每包多 12 位元組（`host_common/udp_frame.hpp`）。
 * TX 沒有資料時，把正在填的 BBFRAME 補 0x00 補滿後送出，所以小封包不會卡在半滿的幀裡；
   之後沒資料就送 dummy 幀。延遲主要來自 UHD 的 TX USB 緩衝：實測（2 MHz、8PSK 2/3）中位數約 51 ms；
   加 `--args num_send_frames=4,send_frame_size=4096` 可降到約 23 ms，但 USB 欠載的機會變大（狀態列 `host U`）。

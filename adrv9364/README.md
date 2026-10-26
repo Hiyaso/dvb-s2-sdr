@@ -44,8 +44,8 @@ PC A ──UDP→ :5000 ──▶ [SOM 1] DVB-S2 TX ─▶ AD9364 ~~~ RF ~~~ AD9
 | `build_fpga.sh` | 一鍵：抓 ADI HDL（hdl_2026_r1）→ 建專案 → Vivado 合成／實作 → BOOT.BIN |
 | `make_sd_image.sh` | 一鍵：Kuiper Linux 2026.1.0 image ＋ BOOT.BIN ＋ `dvbs2_adrv` 服務 ＋ 固定 IP → `.img` |
 | `lib.sh` | 上面兩個腳本共用：下載 Kuiper、工具（mtools、ARM 編譯器、bootgen）、BOOT.BIN |
-| `sw/dvbs2_adrv.cpp` | SOM 上的程式：/dev/mem 控制數據機、sysfs＋libad9361 設 AD9364、UDP、網頁、檔案傳輸 |
-| `sw/web/index.html` | 網頁介面（解碼速率、SNR／RSSI／CFO、頻譜＋星座圖、RF 與數據機設定、PRBS／UDP 模式、儲存設定、傳檔） |
+| `sw/dvbs2_adrv.cpp` | SOM 上的程式：/dev/mem 控制數據機、sysfs＋libad9361 設 AD9364、UDP、網頁、檔案傳輸（UDP／檔案／網頁／頻譜的共用部分在 `../host_common/`，和 B210 PC 程式共用） |
+| `../host_common/web/index.html` | 網頁介面，和 B210 共用（解碼速率、SNR／RSSI／CFO、頻譜＋星座圖、RF 與數據機設定、PRBS／UDP 模式、儲存設定、傳檔）；SD 卡映像裝到 `/usr/local/share/dvbs2/web/` |
 | `sw/build.sh`、`sw/test_mock.sh` | 交叉編譯；PC 上用軟體 FPGA 模型測 UDP 和網頁 API |
 | `rootfs/` | 放進 image 的 `dvbs2.service`、`/etc/dvbs2.conf` 範本 |
 | `sim/tb_adrv.v`、`sim/reg_adrv.sh` | 模擬：兩塊 SOM（各自的取樣時脈、12 位元 DAC／ADC）＋通道模型，酬載走 AXI-Lite |

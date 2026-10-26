@@ -80,7 +80,7 @@ All regressions use Verilator and can be run from any directory. Testbenches pri
 | `sim/reg_ldpc.sh` | LDPC decoder vs. the bit-exact model `ldpc_fixed` (expect 16 PASS) |
 | `sim/reg_bch.sh` | BCH decoder: 0–12 errors and uncorrectable frames |
 | `sim/reg_fec.sh` | Demapper + LDPC + BCH chain |
-| `sim/reg_rxfe.sh` | AGC + timing recovery (±200 ppm, Es/N0 0–10 dB) |
+| `sim/reg_rxfe.sh` | AGC + timing recovery (±200 ppm, Es/N0 0–10 dB): no symbol slips and EVM within limit, expect 6 PASS |
 | `sim/reg_sys.sh quick\|full` | Full loopback `dvbs2_tx → ch_emu → dvbs2_rx`; `full` runs 10 scenarios |
 | `sim/run_all.sh [full]` | All of the above plus the B210 board regression (~40 min, +1 h for `full`) |
 | `sim/vl.sh <tb> <outdir> [-Gparam=val ...]` | Build one testbench. It looks in `sim/tb` and in `sdr/*/sim`; a board testbench also compiles that board's `rtl/` |

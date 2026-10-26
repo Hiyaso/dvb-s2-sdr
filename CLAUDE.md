@@ -49,7 +49,7 @@ sim/reg_tx.sh          # TX vs Python golden, all MODCOD x pilots x roll-off, ~2
 sim/reg_ldpc.sh        # LDPC bit-exact vs ldpc_fixed, expect 16 PASS
 sim/reg_bch.sh         # BCH decoder
 sim/reg_fec.sh         # demap + LDPC + BCH chain
-sim/reg_rxfe.sh        # AGC + timing recovery
+sim/reg_rxfe.sh        # AGC + timing recovery: no symbol slips + EVM limit, expect 6 PASS
 sim/reg_sys.sh [quick|full]   # full loopback; full = 10 scenarios (CFO up to 2 % Rs, ±50 ppm, no pilots, roll-offs)
 sdr/b210/sim/reg_b210.sh   # two dvbs2_b210 boards + channel (defines DVBS2_FIR_FOLD, SPARTAN6)
 sdr/adrv9364/sim/reg_adrv.sh   # two dvbs2_adrv SOMs + channel, payload over AXI-Lite, expect 3 PASS

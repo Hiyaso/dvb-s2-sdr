@@ -45,8 +45,10 @@ reg upd, upd2;
 reg [16:0] mag_r;
 always @(posedge clk) begin
     if (rst) begin
-        gacc <= 34'sd1024 <<< 16; avg_acc <= 26'd0; out_valid <= 1'b0; out_i <= 0; out_q <= 0; upd <= 1'b0;
-        upd2 <= 1'b0; mag_r <= 17'd0;
+        // average starts at the target: from 0 the gain winds up while the average fills
+        // (overshoot to ~0, kicks the timing loop off by thousands of ppm at low Es/N0)
+        gacc <= 34'sd1024 <<< 16; avg_acc <= {target, 10'd0}; out_valid <= 1'b0; out_i <= 0; out_q <= 0;
+        upd <= 1'b0; upd2 <= 1'b0; mag_r <= 17'd0;
     end else begin
         out_valid <= in_valid;
         if (in_valid) begin out_i <= sat16(si); out_q <= sat16(sq); end

@@ -146,6 +146,7 @@ class Decoder:
                     all_ok = False
                 mag = np.minimum(np.abs(v2c), RMAX)
                 sgn = (v2c < 0).astype(np.int64)
+                # stable: the lowest index wins among equal minima, as in the RTL (min1 updated only on strictly smaller)
                 order = np.argsort(mag, axis=0, kind='stable')
                 min1 = np.take_along_axis(mag, order[0:1], 0)[0]
                 min2 = np.take_along_axis(mag, order[1:2], 0)[0]
@@ -175,9 +176,3 @@ class Decoder:
                 break
         hard = (Q[self.words, self.lanes] < 0).astype(np.uint8)
         return hard, it_done
-
-
-def check_min_tie_rule():
-    """argsort(kind=stable) picks the lowest index among equal minima -> matches RTL
-    which updates min1 only on strictly-smaller input."""
-    pass

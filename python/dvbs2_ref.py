@@ -61,13 +61,6 @@ def int_to_bits(v, n):
     return np.array([(v >> (n - 1 - i)) & 1 for i in range(n)], np.uint8)
 
 
-def bits_to_int(b):
-    v = 0
-    for x in b:
-        v = (v << 1) | int(x)
-    return v
-
-
 def bbheader(dfl, rolloff=0.35, matype2=0):
     """80-bit BBHEADER for a Generic Continuous single input stream, CCM."""
     ro = {0.35: 0, 0.25: 1, 0.20: 2}[rolloff]
@@ -187,69 +180,6 @@ def gf_mul(a, b):
     return int(GF_EXP[(GF_LOG[a] + GF_LOG[b]) % GF_N])
 
 
-def gf_inv(a):
-    return int(GF_EXP[(GF_N - GF_LOG[a]) % GF_N])
-
-
-def bch_syndromes(r):
-    """S_j = r(alpha^j), j=1..2t; r[0] is the coefficient of x^(n-1)."""
-    S = []
-    for j in range(1, 2 * BCH_T + 1):
-        s = 0
-        aj = int(GF_EXP[j % GF_N])
-        for b in r:
-            s = gf_mul(s, aj) ^ int(b)
-        S.append(s)
-    return S
-
-
-def bch_decode(r):
-    """Returns (corrected codeword, n_errors or -1 on failure)."""
-    r = np.array(r, np.uint8)
-    n = len(r)
-    S = bch_syndromes(r)
-    if not any(S):
-        return r, 0
-    # Berlekamp-Massey
-    C = [1] + [0] * (2 * BCH_T)
-    B = [1] + [0] * (2 * BCH_T)
-    L, m, b = 0, 1, 1
-    for k in range(2 * BCH_T):
-        d = S[k]
-        for i in range(1, L + 1):
-            d ^= gf_mul(C[i], S[k - i])
-        if d == 0:
-            m += 1
-        elif 2 * L <= k:
-            T = C[:]
-            coef = gf_mul(d, gf_inv(b))
-            for i in range(m, len(C)):
-                C[i] ^= gf_mul(coef, B[i - m])
-            L, B, b, m = k + 1 - L, T, d, 1
-        else:
-            coef = gf_mul(d, gf_inv(b))
-            for i in range(m, len(C)):
-                C[i] ^= gf_mul(coef, B[i - m])
-            m += 1
-    if L > BCH_T:
-        return r, -1
-    # Chien search: bit index i (0 = first transmitted) has power p = n-1-i
-    roots = []
-    for i in range(n):
-        p = n - 1 - i
-        xinv = int(GF_EXP[(GF_N - p) % GF_N])
-        v = 0
-        xp = 1
-        for c in C[:L + 1]:
-            v ^= gf_mul(c, xp)
-            xp = gf_mul(xp, xinv)
-        if v == 0:
-            roots.append(i)
-    if len(roots) != L:
-        return r, -1
-    r[roots] ^= 1
-    return r, L
-
 # ---------------------------------------------------------------------------
 # LDPC
 # ---------------------------------------------------------------------------
@@ -274,29 +204,6 @@ def ldpc_encode(info, rate):
             np.bitwise_xor.at(p, idx, bits)
     p = np.bitwise_xor.accumulate(p)
     return np.concatenate([info, p])
-
-
-def ldpc_edges(rate):
-    """Edges (check, var) in natural indexing (var<K info, var>=K parity)."""
-    k, m, q = ldpc_params(rate)
-    chk, var = [], []
-    for g, row in enumerate(LDPC_SHORT[rate]):
-        for x in row:
-            mm = np.arange(360)
-            chk.append((x + mm * q) % m)
-            var.append(g * 360 + mm)
-    i = np.arange(m)
-    chk += [i, i[1:]]
-    var += [k + i, k + i[1:] - 1]
-    return np.concatenate(chk), np.concatenate(var)
-
-
-def ldpc_syndrome_ok(cw, rate):
-    k, m, q = ldpc_params(rate)
-    c, v = ldpc_edges(rate)
-    s = np.zeros(m, np.uint8)
-    np.bitwise_xor.at(s, c, cw[v])
-    return not s.any()
 
 
 def ldpc_qc_structure(rate):

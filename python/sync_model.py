@@ -10,19 +10,11 @@ frame-sync / carrier-recovery state machines can be designed and checked here:
              frequency loop (3 stages) + linear phase interpolation -> LLRs
 """
 import numpy as np
-from dvbs2_ref import (SOF_BITS, PLS_SCR, pls_code, pi2bpsk, pl_scrambler_rn,
-                       frame_layout, MODCODS, PILOT_SYM, rrc_taps, PSK8_PTS, QPSK_PTS)
+from dvbs2_ref import SOF_BITS, PLS_SCR, pls_code, pi2bpsk
 
 # ---------------------------------------------------------------------------
 # Channel
 # ---------------------------------------------------------------------------
-
-def tx_shape(symbols, beta, sps=2, span=16):
-    h = rrc_taps(beta, sps, span)
-    up = np.zeros(len(symbols) * sps, complex)
-    up[::sps] = symbols
-    return np.convolve(up, h)[:len(up)] * np.sqrt(sps) / np.sqrt(sps)
-
 
 def channel(x, esn0_db, cfo=0.0, phase=0.0, delay=0.0, ppm=0.0, rng=None, sps=2):
     """cfo in cycles/sample, delay in samples (fractional), ppm sample clock offset."""
@@ -135,18 +127,6 @@ def header_correlator(z):
     return A, B, d
 
 
-def pls_decode(soft64):
-    """ML decode of the 64 PLSC soft values (positive => bit 0)."""
-    best = None
-    for code in range(128):
-        modcod, typ = code >> 2, code & 3
-        bits = pls_code(modcod, bool(typ & 2), bool(typ & 1))
-        c = np.sum(soft64 * (1 - 2.0 * bits))
-        if best is None or c > best[0]:
-            best = (c, modcod, typ)
-    return best
-
-
 class FrameSync:
     """Search -> lock state machine operating on a whole symbol array."""
 
@@ -167,17 +147,3 @@ class FrameSync:
 def known_header(modcod, pilots):
     sym = pi2bpsk(np.concatenate([SOF_BITS, pls_code(modcod, True, pilots)]))
     return sym
-
-
-def soft_demap(y, mod):
-    if mod == 'QPSK':
-        out = np.empty(2 * len(y))
-        out[0::2] = y.real
-        out[1::2] = y.imag
-        return out
-    d = np.abs(y[:, None] - PSK8_PTS[None, :]) ** 2
-    out = np.zeros((len(y), 3))
-    for b in range(3):
-        m = ((np.arange(8) >> (2 - b)) & 1)
-        out[:, b] = d[:, m == 1].min(1) - d[:, m == 0].min(1)
-    return out

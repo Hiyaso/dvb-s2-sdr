@@ -6,16 +6,23 @@
 //     (2 x symbol rate; symbol rate = bandwidth / (1 + roll-off) or --rs)
 //   * configures the modem through the UHD user-settings registers
 //   * TX: keeps the TX stream running; optional payload bytes from a file / stdin,
-//         or UDP datagrams (--udp-in, framed as in udp_frame.hpp)
+//         UDP datagrams (--udp-in, framed as in udp_frame.hpp) or the IP packets of a TUN interface (--tun)
 //   * RX: reports lock / MODCOD / CFO / FEC / BER once per second; optional payload
-//         bytes to a file / stdout, or the recovered UDP datagrams (--udp-out)
-//   * --web PORT: web page with TX/RX status, received spectrum, constellation and file loopback;
-//         TX/RX frequency, bandwidth and gain can be changed while running
+//         bytes to a file / stdout, the recovered UDP datagrams (--udp-out) or IP packets (--tun)
+//   * --web PORT: web page with TX/RX status, received spectrum, constellation, data link (UDP / TUN)
+//         and file loopback; TX/RX frequency, bandwidth and gain can be changed while running
 //
 // Two PCs:   PC1:  dvbs2_b210 --mode tx --fpga usrp_b210_dvbs2_fpga.bin --freq 2.45e9 --rs 1e6
 //            PC2:  dvbs2_b210 --mode rx --fpga usrp_b210_dvbs2_fpga.bin --freq 2.45e9 --rs 1e6
 // One B210: dvbs2_b210 --mode trx ...   (TX on TX/RX A, RX on RX2 A, cable + attenuator)
 //           dvbs2_b210 --web 8080       (trx, 1 GHz, 2 MHz, browser at http://localhost:8080)
+// IP link:  PC1 (root): dvbs2_b210 --host 1 --web 8080 --on ...   (dvbs0 = 10.60.0.1/24, TX --freq, RX --freq + --duplex)
+//           PC2 (root): dvbs2_b210 --host 2 --web 8080 --on ...   (dvbs0 = 10.60.0.2/24, TX --freq + --duplex, RX --freq)
+//           two-way, both stations send and receive on their one address; dvbs0 has carrier only while
+//           both directions are decoded (hello datagrams, net_tun.hpp LinkMonitor)
+//           one-way: --mode tx --tun dvbs0 (10.60.0.1) -> --mode rx --tun dvbs0 (10.60.0.2), UDP only
+// Defaults from a file: dvbs2_b210 --config tx.conf ("key = value", same names as the long options; the
+//           command line wins), dvbs2_b210 --mode tx ... --save-config tx.conf writes the given options to a file
 //
 #include <uhd/types/wb_iface.hpp>
 #include <uhd/usrp/multi_usrp.hpp>
@@ -39,6 +46,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -51,6 +59,7 @@
 #include "dvbs2_common.hpp"
 #include "file_xfer.hpp"
 #include "mini_http.hpp"
+#include "net_tun.hpp"
 #include "net_udp.hpp"
 
 namespace po = boost::program_options;
@@ -358,9 +367,10 @@ static void print_rx(const std::vector<uint32_t>& s, double rs, const RxStats& r
             (unsigned long long)rst.seq_gaps.load());
         int fs = rst.file_state;
         if (u)
-            fprintf(g_log, " | udp out %llu pkt %llu B, lost %llu, bad CRC %llu%s", (unsigned long long)u->packets.load(),
+            fprintf(g_log, " | %s out %llu pkt %llu B, lost %llu, bad CRC %llu%s", u->tun ? "tun" : "udp",
+                (unsigned long long)u->packets.load(),
                 (unsigned long long)u->bytes.load(), (unsigned long long)u->lost.load(),
-                (unsigned long long)u->bad.load(), u->send_err ? " (sendto errors)" : "");
+                (unsigned long long)u->bad.load(), u->send_err ? " (send errors)" : "");
         else if (raw)
             fprintf(g_log, " | raw: %llu B", (unsigned long long)rst.file_written.load());
         else if (fs == 0)
@@ -388,7 +398,8 @@ static void print_tx(const std::vector<uint32_t>& s, const TxStats& tst, bool da
         fprintf(g_log, " | payload in %llu B (FPGA %u, overflow %u, buffered %u)", (unsigned long long)tst.bytes.load(),
             s[23], s[24], s[22] >> 20);
     if (u)
-        fprintf(g_log, " | udp in %llu pkt %llu B, dropped %llu, fill %llu B", (unsigned long long)u->packets.load(),
+        fprintf(g_log, " | %s in %llu pkt %llu B, dropped %llu, fill %llu B", u->tun ? "tun" : "udp",
+            (unsigned long long)u->packets.load(),
             (unsigned long long)u->bytes.load(), (unsigned long long)u->drops.load(),
             (unsigned long long)tst.fill.load());
     fprintf(g_log, "\n");
@@ -425,7 +436,8 @@ struct WebState {
     std::string status_json = "{}", spectrum_json = "{}";
     // requests from the web page, handled by the main loop
     std::map<std::string, double> pending;     // tx_freq, tx_bw, ... -> value
-    bool req_send = false, req_prbs = false;
+    bool req_send = false;
+    std::string req_data;                      // data mode requested by the page: prbs | udp | tun
     std::string send_path, send_name;
     std::string rx_path;                       // last received file (download)
 };
@@ -529,9 +541,9 @@ static void handle_client(int fd, const std::string& web_root, const std::string
             }
         }
         reply(fd, n ? 200 : 400, "application/json", n ? "{\"ok\":true}" : "{\"ok\":false}");
-    } else if (method == "POST" && path == "/api/prbs") {
+    } else if (method == "POST" && (path == "/api/prbs" || path == "/api/udp" || path == "/api/tun")) {
         std::lock_guard<std::mutex> l(g_web.m);
-        g_web.req_prbs = true;
+        g_web.req_data = path.substr(5);
         reply(fd, 200, "application/json", "{\"ok\":true}");
     } else if (method == "GET" && path == "/api/received") {
         std::string p, data;
@@ -562,6 +574,7 @@ static void handle_client(int fd, const std::string& web_root, const std::string
 // restarted when the bandwidth (sample rate) or the TX payload source changes.
 struct Session {
     bool do_tx = false, do_rx = false, tx_data = false, rx_data = false, raw = false;
+    std::string src = "prbs", dst = "prbs";        // TX: prbs | file | udp | tun,  RX: prbs | file | udp | tun
     double bps = 0;               // payload bytes per sample (tx_data)
     double fs_act = 0, rs_tx = 0, rs_rx = 0;
     FILE* fin = nullptr;
@@ -573,7 +586,7 @@ struct Session {
     std::unique_ptr<FileSink> sink;
     std::unique_ptr<UdpIn> uin;
     std::unique_ptr<UdpOut> uout;
-    std::thread ttx, trx, trd;
+    std::thread ttx, trx, trd, tlink;
     std::chrono::steady_clock::time_point t0;
     bool cleared = false, compared = false;
     std::string result;           // file comparison result (web mode)
@@ -585,6 +598,7 @@ struct Session {
             std::lock_guard<std::mutex> l(iq->m);
             iq->cv.notify_all();
         }
+        if (tlink.joinable()) tlink.join();
         if (ttx.joinable()) ttx.join();
         if (trx.joinable()) trx.join();
         if (trd.joinable()) {
@@ -640,13 +654,16 @@ static Actual apply_rf(uhd::usrp::multi_usrp::sptr usrp, const Config& c, bool d
 int UHD_SAFE_MAIN(int argc, char* argv[])
 {
     std::string args, fpga, mode, input, output, udp_in, udp_out, tx_ant, rx_ant, ref, web_bind, web_root, file_dir;
-    double freq, tx_freq, rx_freq, rs, bw, tx_bw, rx_bw, tx_gain, rx_gain, duration, preamble;
-    int modcod, rolloff_i, max_iter, web_port;
-    bool no_pilots, raw;
+    std::string tun_name, tun_addr, data_mode, config_path, save_config, subnet;
+    double duplex, freq, tx_freq, rx_freq, rs, bw, tx_bw, rx_bw, tx_gain, rx_gain, duration, preamble;
+    int modcod, rolloff_i, max_iter, web_port, tun_mtu, host;
+    bool no_pilots, raw, start_on;
     po::options_description desc("dvbs2_b210 options");
     // clang-format off
     desc.add_options()
         ("help,h", "help")
+        ("config", po::value<std::string>(&config_path)->default_value(""), "read defaults from FILE: 'key = value' lines, keys = long option names, # comments; the command line wins")
+        ("save-config", po::value<std::string>(&save_config)->default_value(""), "write the options given (command line + --config) to FILE and exit")
         ("args", po::value<std::string>(&args)->default_value(""), "UHD device args, e.g. serial=3xxxxxx")
         ("fpga", po::value<std::string>(&fpga)->default_value("usrp_b210_dvbs2_fpga.bin"), "DVB-S2 FPGA image")
         ("mode", po::value<std::string>(&mode)->default_value(""), "tx | rx | trx (default rx, with --web trx)")
@@ -669,6 +686,15 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         ("output", po::value<std::string>(&output)->default_value(""), "RX payload file ('-' = stdout); none = PRBS BER check")
         ("udp-in", po::value<std::string>(&udp_in)->default_value(""), "TX payload: UDP datagrams received on [addr:]port (addr default 127.0.0.1, 0.0.0.0 = all)")
         ("udp-out", po::value<std::string>(&udp_out)->default_value(""), "RX payload: send the received UDP datagrams to host:port")
+        ("host", po::value<int>(&host)->default_value(0), "two-way IP link station N: --mode trx, --tun dvbs0 with address <subnet>.N, "
+                                                          "host 1 TX on --freq and RX on --freq + --duplex, other hosts the other way round")
+        ("subnet", po::value<std::string>(&subnet)->default_value("10.60.0.0/24"), "--host: network of the link (station N = subnet + N)")
+        ("duplex", po::value<double>(&duplex)->default_value(10e6), "--host: distance of the two link frequencies (Hz)")
+        ("tun", po::value<std::string>(&tun_name)->default_value(""), "TX/RX payload: IP packets of this TUN interface, e.g. dvbs0 (created if needed)")
+        ("tun-addr", po::value<std::string>(&tun_addr)->default_value(""), "TUN IPv4 address/prefix (default --mode tx 10.60.0.1/24, rx 10.60.0.2/24; 'none' = leave as is)")
+        ("tun-mtu", po::value<int>(&tun_mtu)->default_value(1500), "TUN MTU (0 = leave as is)")
+        ("data", po::value<std::string>(&data_mode)->default_value(""), "web: payload at start, prbs | udp | tun (default tun / udp when given, else prbs)")
+        ("on", po::bool_switch(&start_on), "web: TX and RX switched on at start (default off)")
         ("max-iter", po::value<int>(&max_iter)->default_value(25), "LDPC iterations (1..50)")
         ("preamble", po::value<double>(&preamble)->default_value(1.0), "TX: seconds of zero bytes before the file (RX lock time)")
         ("raw", po::bool_switch(&raw), "no file header: TX sends the bytes as they are, RX writes every byte")
@@ -680,31 +706,94 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
     // clang-format on
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
+    // configuration file: stored after the command line, so it only fills the options not given there
+    if (const std::string conf = vm["config"].as<std::string>(); !conf.empty()) {
+        std::ifstream f(conf);
+        if (!f) throw std::runtime_error("--config: cannot read " + conf);
+        try {
+            po::store(po::parse_config_file(f, desc), vm);
+        } catch (const po::error& e) {
+            throw std::runtime_error(conf + ": " + e.what());
+        }
+    }
     po::notify(vm);
     if (vm.count("help")) {
         std::cout << desc << std::endl;
         return EXIT_SUCCESS;
     }
+    if (!save_config.empty()) {
+        std::ostringstream o;
+        o << "# dvbs2_b210 configuration: dvbs2_b210 --config " << save_config << " (dvbs2_b210 --help lists all keys)\n";
+        for (const auto& d : desc.options()) {
+            const std::string& k = d->long_name();
+            if (k == "help" || k == "config" || k == "save-config" || !vm.count(k) || vm[k].defaulted()) continue;
+            const boost::any& v = vm[k].value();
+            o << k << " = ";
+            if (auto p = boost::any_cast<std::string>(&v)) o << *p;
+            else if (auto p = boost::any_cast<double>(&v)) o << std::setprecision(10) << *p;
+            else if (auto p = boost::any_cast<int>(&v)) o << *p;
+            else if (auto p = boost::any_cast<bool>(&v)) o << (*p ? 1 : 0);
+            o << "\n";
+        }
+        std::ofstream f(save_config);
+        if (!(f << o.str())) throw std::runtime_error("--save-config: cannot write " + save_config);
+        std::cout << o.str() << "written to " << save_config << std::endl;
+        return EXIT_SUCCESS;
+    }
     const bool web = web_port > 0;
+    // two-way IP link station: trx, TUN interface dvbs0 with address subnet + host
+    uint32_t link_addr = 0;
+    if (host) {
+        if (!mode.empty() && mode != "trx") throw std::runtime_error("--host is a two-way station: --mode trx (or leave --mode out)");
+        if (!input.empty() || !output.empty()) throw std::runtime_error("--host carries IP packets: not with --input/--output");
+        mode = "trx";
+        if (tun_name.empty()) tun_name = "dvbs0";
+        const size_t sl = subnet.find('/');
+        in_addr na{};
+        const int prefix = sl == std::string::npos ? -1 : std::atoi(subnet.c_str() + sl + 1);
+        if (inet_pton(AF_INET, subnet.substr(0, sl).c_str(), &na) != 1 || prefix < 1 || prefix > 30)
+            throw std::runtime_error("bad --subnet '" + subnet + "' (expected a.b.c.d/n, n = 1..30)");
+        const uint32_t mask = ~(0xFFFFFFFFu >> prefix);
+        if (host < 1 || uint32_t(host) >= (~mask))
+            throw std::runtime_error("--host must be 1.." + std::to_string(~mask - 1) + " in " + subnet);
+        link_addr = (ntohl(na.s_addr) & mask) | uint32_t(host);
+        if (tun_addr.empty()) {
+            in_addr a{htonl(link_addr)};
+            char b[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &a, b, sizeof(b));
+            tun_addr = std::string(b) + "/" + std::to_string(prefix);
+        }
+        if (duplex <= 0) throw std::runtime_error("--duplex must be > 0 (the two directions need two frequencies)");
+    }
     if (mode.empty()) mode = web ? "trx" : "rx";
     const bool do_tx = (mode == "tx" || mode == "trx");
     const bool do_rx = (mode == "rx" || mode == "trx");
     if (!do_tx && !do_rx)
         throw std::runtime_error("--mode must be tx, rx or trx");
-    // TX / RX switched on: from the start on the command line; in web mode off until switched on in the page
-    bool tx_on = do_tx && !web, rx_on = do_rx && !web;
+    // TX / RX switched on: from the start on the command line; in web mode off until switched on in the page (or --on)
+    bool tx_on = do_tx && (!web || start_on), rx_on = do_rx && (!web || start_on);
     if (kbch_of(modcod) == 0)
         throw std::runtime_error("unsupported --modcod");
     if (rolloff_i != 35 && rolloff_i != 25 && rolloff_i != 20)
         throw std::runtime_error("--rolloff must be 35, 25 or 20");
     if (max_iter < 1 || max_iter > 50)
         throw std::runtime_error("--max-iter must be 1..50");
-    if (web && (!input.empty() || !output.empty() || !udp_in.empty() || !udp_out.empty()))
-        throw std::runtime_error("--web: send files from the web page instead of --input/--output/--udp-in/--udp-out");
+    if (web && (!input.empty() || !output.empty()))
+        throw std::runtime_error("--web: send files from the web page instead of --input/--output");
     if (!udp_in.empty() && !input.empty())
         throw std::runtime_error("--udp-in and --input cannot be used together");
     if (!udp_out.empty() && !output.empty())
         throw std::runtime_error("--udp-out and --output cannot be used together");
+    if (!web && !tun_name.empty() && (!input.empty() || !output.empty() || !udp_in.empty() || !udp_out.empty()))
+        throw std::runtime_error("--tun carries the TX and RX payload: not with --input/--output/--udp-in/--udp-out (with --web they are separate modes)");
+    // payload modes the web page can switch between (file loopback is started from the page)
+    std::vector<std::string> data_modes{"prbs"};
+    if (!udp_in.empty() || !udp_out.empty()) data_modes.push_back("udp");
+    if (!tun_name.empty()) data_modes.push_back("tun");
+    if (data_mode.empty()) data_mode = !tun_name.empty() ? "tun" : (!udp_in.empty() || !udp_out.empty()) ? "udp" : "prbs";
+    if (std::find(data_modes.begin(), data_modes.end(), data_mode) == data_modes.end())
+        throw std::runtime_error("--data " + data_mode + ": needs " + (data_mode == "tun" ? "--tun" : data_mode == "udp" ? "--udp-in / --udp-out" : "prbs | udp | tun"));
+    if (tun_addr.empty() && !tun_name.empty()) tun_addr = mode == "tx" ? "10.60.0.1/24" : mode == "rx" ? "10.60.0.2/24" : "";
     if (udp_out.find(':') == std::string::npos && !udp_out.empty())
         throw std::runtime_error("--udp-out needs host:port");
     const int ro       = rolloff_i == 25 ? 1 : rolloff_i == 20 ? 2 : 0;
@@ -713,6 +802,10 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
 
     Config cfg;
     if (freq == 0) freq = web ? 1e9 : 2.45e9;
+    if (host && !tx_freq && !rx_freq) {
+        tx_freq = host == 1 ? freq : freq + duplex;
+        rx_freq = host == 1 ? freq + duplex : freq;
+    }
     cfg.tx_freq = tx_freq ? tx_freq : freq;
     cfg.rx_freq = rx_freq ? rx_freq : freq;
     if (bw == 0) bw = rs ? rs * (1 + alpha) : web ? 2e6 : 1e6 * (1 + alpha);
@@ -726,6 +819,27 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
     cfg.max_iter = max_iter;
     cfg.tx_ant  = tx_ant;
     cfg.rx_ant  = rx_ant;
+
+    // ---- TUN interface: opened once, kept for the whole run (session restarts keep it and its address)
+    TunDev tun;
+    if (!tun_name.empty()) {
+        if (host)
+            fprintf(g_log, "two-way link station %d (%s): TX %.6g MHz, RX %.6g MHz; %s has carrier while both directions are decoded\n",
+                host, tun_addr.c_str(), cfg.tx_freq / 1e6, cfg.rx_freq / 1e6, tun_name.c_str());
+        tun.open(tun_name);
+        if (!tun_addr.empty() && tun_addr != "none") tun.configure(tun_addr, tun_mtu);
+        const TunDev::Info ti = tun.info();
+        fprintf(g_log, "TUN %s: %s, %s, MTU %d\n", tun.name.c_str(), ti.up ? "up" : "DOWN (ip link set ... up)",
+            ti.addr.empty() ? "no IPv4 address" : ti.addr.c_str(), ti.mtu);
+        if (host) {
+            if (!tun.set_carrier(false))
+                fprintf(g_log, "note: cannot switch the carrier of %s (%s, kernel < 5.0?): it stays up, packets are dropped "
+                               "by the program while the link is down\n", tun.name.c_str(), strerror(errno));
+        }
+        if (do_tx && do_rx && cfg.tx_freq == cfg.rx_freq)
+            fprintf(g_log, "note: --tun with --mode trx on one frequency sends the packets back to this interface; "
+                           "for a link use two stations with swapped --tx-freq / --rx-freq\n");
+    }
 
     // ---- open the device with the DVB-S2 FPGA image
     std::string dev_args = args;
@@ -775,6 +889,18 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         tweb = std::thread(web_server, web_port, web_bind, "localhost",
             [web_root, file_dir](int fd) { handle_client(fd, web_root, file_dir); });
 
+    // ---- two-way link check (--host): hellos in the TUN payload stream, carrier of the interface follows it
+    LinkMonitor link;
+    link.my_addr = link_addr;
+    std::atomic<bool> link_up{false};
+    auto link_change = [&](bool up) {
+        tun.set_carrier(up);
+        if (up != link_up.exchange(up))
+            fprintf(g_log, "link %s: %s\n", up ? "UP" : "down",
+                up ? ("peer " + link.peer_str() + ", both directions decoded").c_str()
+                   : !link.hears() ? "no hello from the peer" : "the peer does not decode us");
+    };
+
     // ---- session start: RF, rates, modem registers, threads
     Session S;
     Actual act;
@@ -782,8 +908,17 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         S         = Session();
         S.do_tx   = do_tx && tx_on;
         S.do_rx   = do_rx && rx_on;
-        S.tx_data = S.do_tx && (!in.empty() || !udp_in.empty());
-        S.rx_data = S.do_rx && (!out.empty() || !udp_out.empty());
+        // payload source / sink: a file (command line, or the web file loopback), else the data mode
+        if (!in.empty()) S.src = "file";
+        else if (!tun_name.empty() && (!web || data_mode == "tun")) S.src = "tun";
+        else if (!udp_in.empty() && (!web || data_mode == "udp")) S.src = "udp";
+        if (!out.empty()) S.dst = "file";
+        else if (!tun_name.empty() && (!web || data_mode == "tun")) S.dst = "tun";
+        else if (!udp_out.empty() && (!web || data_mode == "udp")) S.dst = "udp";
+        if (!S.do_tx) S.src = "prbs";
+        if (!S.do_rx) S.dst = "prbs";
+        S.tx_data = S.src != "prbs";
+        S.rx_data = S.dst != "prbs";
         S.raw     = raw;
         S.in_path = in;
         S.in_name = name;
@@ -801,15 +936,15 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         if ((do_rx && act.mcr / act.fs_rx < 7.999) || (do_tx && act.mcr / act.fs_tx < 7.999))
             throw std::runtime_error("less than 8 radio clocks per sample");
 
-        if (S.tx_data && udp_in.empty()) {
+        if (S.src == "file") {
             S.fin = (in == "-") ? stdin : fopen(in.c_str(), "rb");
             if (!S.fin) throw std::runtime_error("cannot open payload file " + in);
         }
-        if (S.rx_data && udp_out.empty()) {
+        if (S.dst == "file") {
             S.fout = (out == "-") ? stdout : fopen(out.c_str(), "wb");
             if (!S.fout) throw std::runtime_error("cannot open payload file " + out);
         }
-        if (S.tx_data && !udp_in.empty()) {
+        if (S.src == "udp") {
             S.uin           = std::unique_ptr<UdpIn>(new UdpIn());
             const sockaddr_in a = udp_addr(udp_in, "127.0.0.1");
             S.uin->fd       = socket(AF_INET, SOCK_DGRAM, 0);
@@ -822,13 +957,30 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
                 throw std::runtime_error("cannot bind UDP " + addr_str(a) + ": " + strerror(errno));
             fprintf(g_log, "TX payload: UDP datagrams received on %s\n", addr_str(a).c_str());
         }
-        if (S.rx_data && !udp_out.empty()) {
+        if (S.dst == "udp") {
             S.uout      = std::unique_ptr<UdpOut>(new UdpOut());
             S.uout->dst = udp_addr(udp_out, "");
             S.uout->fd  = socket(AF_INET, SOCK_DGRAM, 0);
             if (S.uout->fd < 0) throw std::runtime_error("cannot open a UDP socket");
             fprintf(g_log, "RX payload: UDP datagrams sent to %s\n", addr_str(S.uout->dst).c_str());
         }
+        // TUN: the session borrows the device (it stays open between sessions)
+        if (S.src == "tun") {
+            S.uin         = std::unique_ptr<UdpIn>(new UdpIn());
+            S.uin->fd     = tun.fd;
+            S.uin->tun    = true;
+            S.uin->own_fd = false;
+            fprintf(g_log, "TX payload: IP packets routed to %s\n", tun.name.c_str());
+        }
+        if (S.dst == "tun") {
+            S.uout         = std::unique_ptr<UdpOut>(new UdpOut());
+            S.uout->fd     = tun.fd;
+            S.uout->tun    = true;
+            S.uout->own_fd = false;
+            if (host) S.uout->intercept = [&link](const std::vector<uint8_t>& p) { return link.on_packet(p); };
+            fprintf(g_log, "RX payload: IP packets written to %s\n", tun.name.c_str());
+        }
+        if (host && S.src != "tun") link_change(false);   // no TUN payload in this session: no link
 
         // ---- configure the modem
         uint32_t ctrl = CTRL_PLL | CTRL_AGC | CTRL_ES;
@@ -839,9 +991,8 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         if (S.do_rx) ctrl |= CTRL_RX_EN | (S.rx_data ? CTRL_RX_DATA : 0);
         modem.wr(REG_CTRL, ctrl);
         modem.wr(REG_CLR, 1);
-        fprintf(g_log, "%s, %s, roll-off 0.%02d, %s%s\n", MODCOD_NAME[cfg.modcod], cfg.pilots ? "pilots" : "no pilots",
-            rolloff_i, S.do_tx ? (S.uin ? "TX payload from UDP " : S.tx_data ? "TX payload from file " : "TX PRBS ") : "",
-            S.do_rx ? (S.uout ? "RX payload to UDP" : S.rx_data ? "RX payload to file" : "RX PRBS check") : "");
+        fprintf(g_log, "%s, %s, roll-off 0.%02d, TX payload %s, RX payload %s\n", MODCOD_NAME[cfg.modcod],
+            cfg.pilots ? "pilots" : "no pilots", rolloff_i, S.do_tx ? S.src.c_str() : "-", S.do_rx ? S.dst.c_str() : "-");
 
         // payload rate: 90 % of the frame capacity, in bytes per sample (2 samples / symbol)
         S.bps = 0.9 * double((kbch_of(cfg.modcod) - 80) / 8) / (2.0 * frame_symbols(cfg.modcod, cfg.pilots));
@@ -856,9 +1007,9 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         S.sink           = std::unique_ptr<FileSink>(new FileSink());
         std::vector<uint8_t> prefix;
         const size_t dfl_bytes = size_t(kbch_of(cfg.modcod) - 80) / 8;
-        // UDP: queue at most ~0.2 s of air time (and at least one maximum-size datagram)
+        // UDP / TUN: queue at most ~0.2 s of air time (and at least one maximum-size datagram)
         if (S.uin) S.uin->limit = std::max(size_t(0.2 * S.bps * act.fs_tx), UDP_MAX_PAYLOAD + UDP_OVERHEAD);
-        if (S.tx_data && !raw && !S.uin) {
+        if (S.src == "file" && !raw) {
             // preamble (zero bytes while the receiver locks) + header
             prefix.assign(size_t(std::max(0.0, preamble) * S.bps * act.fs_tx), 0);
             uint64_t flen = LEN_UNKNOWN;
@@ -877,6 +1028,7 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         S.sink->out = S.fout;
         if (S.uin)
             S.trd = std::thread(udp_reader_worker, S.uin.get(), S.iq.get());
+        if (host && S.src == "tun") S.tlink = std::thread(link_worker, &link, S.uin.get(), S.iq.get(), link_change);
         else if (S.tx_data)
             S.trd = std::thread(reader_worker, S.fin, S.iq.get(), prefix);
         if (S.do_rx) S.trx = std::thread(rx_worker, usrp, S.sink.get(), S.uout.get(), S.rx_data, S.rst.get());
@@ -1037,9 +1189,15 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         const double esn0 = S.do_rx ? esn0_avg : NAN;
         const double ebn0 = lock && rx_cap > 0 ? esn0 - 10.0 * std::log10(rx_cap / S.rs_rx) : NAN;   // per information bit
         const double level_dbfs = S.do_rx && level_avg > 0 ? 10.0 * std::log10(level_avg / (32767.0 * 32767.0)) : NAN;
+        const UdpIn* ui  = S.uin.get();
+        const UdpOut* uo = S.uout.get();
+        const TunDev::Info ti = tun_name.empty() ? TunDev::Info() : tun.info();
         std::ostringstream j;
         j.precision(10);
-        j << "{\"board\":\"USRP B210\",\"caps\":{\"modem_cfg\":false,\"udp\":false,\"shared_fs\":false"
+        j << "{\"board\":\"USRP B210\",\"caps\":{\"modem_cfg\":false,\"udp\":" << (data_modes.size() > 1 ? "true" : "false")
+          << ",\"udp_edit\":false,\"save\":false,\"data_modes\":[";
+        for (size_t i = 0; i < data_modes.size(); i++) j << (i ? "," : "") << jstr(data_modes[i]);
+        j << "],\"shared_fs\":false"
           << ",\"bw_min\":" << BW_MIN << ",\"bw_max\":" << BW_MAX << ",\"rx_gain_max\":76,\"max_upload\":" << MAX_UPLOAD
           << ",\"const_fpga\":\"2.2\",\"level_src\":\"DDC output\",\"tx_under\":\"Underflow DUC / USB\""
           << ",\"rx_over\":\"USB overflow\",\"duc_bad\":false},";
@@ -1050,14 +1208,26 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         j << "\"config\":{\"tx_freq\":" << cfg.tx_freq << ",\"tx_bw\":" << cfg.tx_bw << ",\"tx_gain\":" << cfg.tx_gain
           << ",\"rx_freq\":" << cfg.rx_freq << ",\"rx_bw\":" << cfg.rx_bw << ",\"rx_gain\":" << cfg.rx_gain
           << ",\"rolloff\":" << alpha << ",\"modcod\":" << jstr(MODCOD_NAME[cfg.modcod]) << ",\"pilots\":"
-          << (cfg.pilots ? "true" : "false") << "},";
+          << (cfg.pilots ? "true" : "false") << ",\"data\":" << jstr(data_mode) << ",\"udp_in\":" << jstr(udp_in)
+          << ",\"udp_out\":" << jstr(udp_out) << ",\"tun\":" << jstr(tun.name) << ",\"tun_up\":" << (ti.up ? "true" : "false")
+          << ",\"tun_addr\":" << jstr(ti.addr) << ",\"tun_mtu\":" << ti.mtu << ",\"tun_carrier\":" << (ti.running ? "true" : "false")
+          << ",\"host\":" << host << "},";
+        if (host) {
+            const int64_t age = link.last_rx_ms < 0 ? -1 : LinkMonitor::now_ms() - link.last_rx_ms;
+            j << "\"link\":{\"up\":" << (link.up() ? "true" : "false") << ",\"hears\":" << (link.hears() ? "true" : "false")
+              << ",\"peer_hears\":" << (link.peer_hears ? "true" : "false") << ",\"peer\":" << jstr(link.peer_str())
+              << ",\"hello_age\":" << (age < 0 ? -1.0 : age / 1e3) << ",\"hellos_tx\":" << link.tx_hellos
+              << ",\"hellos_rx\":" << link.rx_hellos << ",\"link_drops\":" << (ui ? ui->link_drops.load() : 0) << "},";
+        }
         j << "\"tx\":{\"on\":" << (S.do_tx ? "true" : "false") << ",\"freq\":" << act.tx_freq << ",\"rs\":" << S.rs_tx
           << ",\"fs\":" << act.fs_tx << ",\"gain\":" << act.tx_gain << ",\"analog_bw\":" << act.tx_abw
           << ",\"mcr\":" << act.mcr << ",\"frames_encoded\":" << s[17] << ",\"frames_sent\":" << s[18]
           << ",\"dummy\":" << s[19] << ",\"duc_underflow\":" << s[26] << ",\"host_underflow\":" << S.tst->underflows
-          << ",\"mode\":" << jstr(S.tx_data ? "file" : "prbs") << ",\"file\":" << jstr(S.in_name)
+          << ",\"mode\":" << jstr(S.src) << ",\"file\":" << jstr(S.in_name)
           << ",\"bytes\":" << S.tst->bytes << ",\"done\":" << (S.tst->pad_done ? "true" : "false")
-          << ",\"capacity_bps\":" << tx_cap << ",\"rate_bps\":" << tx_rate << ",\"host_bps\":" << tx_host << "},";
+          << ",\"capacity_bps\":" << tx_cap << ",\"rate_bps\":" << tx_rate << ",\"host_bps\":" << tx_host
+          << ",\"udp_packets\":" << (ui ? ui->packets.load() : 0) << ",\"udp_bytes\":" << (ui ? ui->bytes.load() : 0)
+          << ",\"udp_drops\":" << (ui ? ui->drops.load() : 0) << ",\"fill\":" << S.tst->fill << "},";
         j << "\"rx\":{\"on\":" << (S.do_rx ? "true" : "false") << ",\"freq\":" << act.rx_freq << ",\"rs\":" << S.rs_rx
           << ",\"fs\":" << act.fs_rx << ",\"gain\":" << act.rx_gain << ",\"analog_bw\":" << act.rx_abw
           << ",\"lock\":" << (lock ? "true" : "false") << ",\"modcod\":" << jstr(MODCOD_NAME[mc <= 16 ? mc : 11])
@@ -1068,13 +1238,15 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
           << ",\"bch_fail\":" << s[9] << ",\"bb_ok\":" << s[10] << ",\"bb_crc\":" << s[11]
           << ",\"ber_lock\":" << (((w0 >> 14) & 1) ? "true" : "false") << ",\"ber_bits\":" << bits
           << ",\"ber_errors\":" << s[16] << ",\"host_overflow\":" << S.rst->overflows
-          << ",\"mode\":" << jstr(S.rx_data ? "file" : "prbs") << ",\"file_state\":" << S.rst->file_state
+          << ",\"mode\":" << jstr(S.dst) << ",\"file_state\":" << S.rst->file_state
           << ",\"file_len\":" << (S.rst->file_len == LEN_UNKNOWN ? 0 : S.rst->file_len.load())
           << ",\"file_written\":" << S.rst->file_written << ",\"seq_gaps\":" << S.rst->file_gaps
           << ",\"capacity_bps\":" << rx_cap << ",\"rate_bps\":" << rx_rate << ",\"frames_per_s\":" << rx_fps
           << ",\"file_bps\":" << rx_file << ",\"rate_interval\":" << rate_dt << ",\"rate_time\":" << rate_mark.t
           << ",\"rssi_db\":" << jnum(S.do_rx ? rssi_db : NAN) << ",\"level_dbfs\":" << jnum(level_dbfs)
           << ",\"esn0_db\":" << jnum(esn0) << ",\"ebn0_db\":" << jnum(ebn0)
+          << ",\"udp_packets\":" << (uo ? uo->packets.load() : 0) << ",\"udp_bytes\":" << (uo ? uo->bytes.load() : 0)
+          << ",\"udp_lost\":" << (uo ? uo->lost.load() : 0) << ",\"udp_bad\":" << (uo ? uo->bad.load() : 0)
           << ",\"result\":" << jstr(S.result) << "}}";
         std::ostringstream sp;
         sp.precision(10);
@@ -1122,18 +1294,26 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
         // ---- requests from the web page
         if (web) {
             std::map<std::string, double> pend;
-            bool rq_send = false, rq_prbs = false;
-            std::string spath, sname;
+            bool rq_send = false;
+            std::string rq_data, spath, sname;
             {
                 std::lock_guard<std::mutex> l(g_web.m);
                 pend.swap(g_web.pending);
                 rq_send = g_web.req_send;
-                rq_prbs = g_web.req_prbs;
+                rq_data.swap(g_web.req_data);
                 spath   = g_web.send_path;
                 sname   = g_web.send_name;
-                g_web.req_send = g_web.req_prbs = false;
+                g_web.req_send = false;
             }
-            bool restart = rq_send || rq_prbs;
+            if (!rq_data.empty() && std::find(data_modes.begin(), data_modes.end(), rq_data) == data_modes.end()) {
+                fprintf(stderr, "web: data mode %s not available (start with --udp-in/--udp-out or --tun)\n", rq_data.c_str());
+                rq_data.clear();
+            }
+            if (!rq_data.empty()) {
+                data_mode = rq_data;
+                fprintf(g_log, "web: data = %s\n", data_mode.c_str());
+            }
+            bool restart = rq_send || !rq_data.empty();
             std::unique_lock<std::mutex> busy(snap_busy, std::defer_lock);
             if (restart || !pend.empty()) busy.lock();
             try {
@@ -1172,9 +1352,9 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
                     fprintf(g_log, "web: %s = %.6g\n", k.c_str(), v);
                 }
                 if (restart) {
-                    // keep sending the current file unless PRBS was requested
+                    // keep sending the current file unless a data mode (PRBS / UDP / TUN) was requested
                     std::string in = S.in_path, name = S.in_name;
-                    if (rq_prbs) in.clear(), name.clear();
+                    if (!rq_data.empty()) in.clear(), name.clear();
                     if (rq_send) in = spath, name = sname;
                     if (!(tx_on && rx_on)) in.clear(), name.clear();   // file loopback needs TX and RX on
                     S.stop(modem);
@@ -1205,6 +1385,10 @@ int UHD_SAFE_MAIN(int argc, char* argv[])
             t_print = now;
             if (S.do_tx) print_tx(s, *S.tst, S.tx_data, S.uin.get());
             if (S.do_rx) print_rx(s, S.rs_rx, *S.rst, S.rx_data, S.raw, S.uout.get());
+            if (host)
+                fprintf(g_log, "link %s | peer %s | hellos sent %llu received %llu\n",
+                    link.up() ? "UP  " : "down", link.peer_str().empty() ? "-" : link.peer_str().c_str(),
+                    (unsigned long long)link.tx_hellos.load(), (unsigned long long)link.rx_hellos.load());
         }
         // restart the BER statistics once, after the receiver has settled
         if (S.do_rx && !S.cleared && ((s[0] >> 14) & 1) && s[10] >= 5) {

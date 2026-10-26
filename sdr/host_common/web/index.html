@@ -18,6 +18,7 @@
           --accent: #4493f8; --ok: #3fb950; --bad: #f85149; --warn: #d29922; }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg);
        font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line);
@@ -175,15 +176,15 @@ details.tbl th { color: var(--muted); font-weight: 600; }
   </section>
 
   <section class="card" id="udp_card" hidden>
-    <h2>Data Link (UDP)</h2>
-    <div class="actions" style="margin-top:0"><span class="mode"><button id="m_prbs" onclick="post('/api/prbs')">PRBS test</button><button id="m_udp" onclick="post('/api/udp')">UDP data</button></span>
+    <h2 id="udp_title">Data Link (UDP)</h2>
+    <div class="actions" style="margin-top:0"><span class="mode" id="modes"></span>
       <span class="hint" id="mode_hint"></span></div>
-    <div class="form" style="grid-template-columns: 1fr 1fr; margin-top:10px">
+    <div class="form" id="udp_form" style="grid-template-columns: 1fr 1fr; margin-top:10px">
       <div><label for="udp_in">TX: receive datagrams on [addr:]port</label><input id="udp_in" type="text" placeholder="0.0.0.0:5000"></div>
       <div><label for="udp_out">RX: send datagrams to host:port</label><input id="udp_out" type="text" placeholder="192.168.30.255:5001"></div>
     </div>
-    <div class="actions"><button onclick="applyUdp()">Apply UDP</button>
-      <button class="ghost" onclick="saveCfg()">Save settings (used at boot)</button>
+    <div class="actions" id="udp_actions"><button id="udp_apply" onclick="applyUdp()">Apply UDP</button>
+      <button class="ghost" id="save_btn" onclick="saveCfg()">Save settings (used at boot)</button>
       <span class="hint" id="udp_hint"></span></div>
     <dl id="udp_stat"></dl>
   </section>
@@ -207,7 +208,7 @@ details.tbl th { color: var(--muted); font-weight: 600; }
       <button id="send" onclick="sendFile()">Send file</button>
       <span class="hint" id="up_hint"></span>
       <button class="ghost" onclick="post('/api/prbs')">Back to PRBS test</button>
-      <button class="ghost" id="back_udp" onclick="post('/api/udp')" hidden>Back to UDP data</button>
+      <span id="back_modes" style="display:contents"></span>
       <a id="dl" class="hint" href="/api/received" style="display:none">Download received file</a>
     </div>
     <dl id="file_stat"></dl>
@@ -229,12 +230,41 @@ let cfgLoaded = false, last = null;
 // board capabilities, from the first /api/status (defaults: B210 behaviour of a program without "caps")
 let caps = {modem_cfg: false, udp: false, shared_fs: false, bw_min: 0.1e6, bw_max: 5.2e6, rx_gain_max: 76,
             max_upload: 2 * 1024 ** 3, const_fpga: '2.2', level_src: 'DDC output',
-            tx_under: 'Underflow DUC / USB', rx_over: 'USB overflow', duc_bad: false};
+            tx_under: 'Underflow DUC / USB', rx_over: 'USB overflow', duc_bad: false,
+            // data link card (caps.udp): payload modes, editable UDP addresses, "Save settings"
+            data_modes: ['prbs', 'udp'], udp_edit: true, save: true};
+const MODE_LABEL = {prbs: 'PRBS test', udp: 'UDP data', tun: 'Network interface'};
+let modesKey = '';
+function buildModes() {                  // one button per payload mode (and a "Back to" button in the file card)
+  const ms = caps.data_modes, key = ms.join();
+  if (key === modesKey) return;
+  modesKey = key;
+  const button = (m, cls, text) => {
+    const b = document.createElement('button');
+    b.id = cls ? 'back_' + m : 'm_' + m;
+    if (cls) b.className = cls;
+    b.textContent = text;
+    b.onclick = () => post('/api/' + m);
+    return b;
+  };
+  $('modes').replaceChildren(...ms.map(m => button(m, '', MODE_LABEL[m] || m)));
+  $('back_modes').replaceChildren(...ms.filter(m => m !== 'prbs')
+    .map(m => button(m, 'ghost', 'Back to ' + (m === 'tun' ? 'network interface' : MODE_LABEL[m] || m))));
+}
 function applyCaps(s) {                  // every status: the ADRV9364 bandwidth range follows the roll-off
   caps = Object.assign(caps, s.caps || {});
   document.title = 'DVB-S2 ' + (s.board || '');
   $('modem_card').hidden = !caps.modem_cfg;
-  $('udp_card').hidden = $('back_udp').hidden = !caps.udp;
+  $('udp_card').hidden = $('back_modes').hidden = !caps.udp;
+  const hasUdp = caps.data_modes.includes('udp'), hasTun = caps.data_modes.includes('tun');
+  const kinds = [hasUdp && 'UDP', hasTun && 'network interface'].filter(Boolean).join(' / ');
+  $('udp_title').textContent = 'Data Link' + (kinds ? ' (' + kinds + ')' : '');
+  $('udp_form').hidden = !hasUdp;
+  $('udp_in').disabled = $('udp_out').disabled = !caps.udp_edit;
+  $('udp_apply').hidden = !(caps.udp_edit && hasUdp);
+  $('save_btn').hidden = !caps.save;
+  $('udp_actions').hidden = $('udp_apply').hidden && $('save_btn').hidden;
+  buildModes();
   for (const side of ['tx', 'rx']) { $(side + '_bw').min = caps.bw_min / 1e6; $(side + '_bw').max = caps.bw_max / 1e6; }
   $('rx_gain').max = caps.rx_gain_max;
   const hint = 'File loopback needs TX and RX of this board connected (cable + attenuator). ' +
@@ -263,6 +293,13 @@ function dur(sec) {
   sec = Math.round(sec);
   const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = sec % 60;
   return (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + x + ' s';
+}
+function linkText(l, tx, rx) {
+  if (l.up) return 'Connected to ' + l.peer + ' · both directions decoded';
+  if (!tx.on || !rx.on) return 'Down · TX and RX must be on';
+  if (tx.mode !== 'tun') return 'Down · choose "Network interface"';
+  if (!l.hears) return 'Down · no hello from the peer' + (rx.lock ? '' : ' (RX not locked)');
+  return 'Down · receiving ' + (l.peer || 'the peer') + ', it does not decode us yet';
 }
 function stat(el, rows) {
   $(el).innerHTML = rows.map(([k, v, cls]) => `<div><dt>${k}</dt><dd class="${cls || ''}">${v}</dd></div>`).join('');
@@ -405,16 +442,26 @@ function render(s) {
   }
   $('sub').textContent = `${s.board} · FPGA ${s.fpga.version} · ${c.modcod}${c.pilots ? ' pilots' : ''} · roll-off ${c.rolloff}`;
   if (caps.udp) {
-    $('m_prbs').className = c.data === 'prbs' && tx.mode !== 'file' ? 'sel' : '';
-    $('m_udp').className = c.data === 'udp' && tx.mode !== 'file' ? 'sel' : '';
+    for (const m of caps.data_modes) $('m_' + m).className = c.data === m && tx.mode !== 'file' ? 'sel' : '';
     $('mode_hint').textContent = tx.mode === 'file' ? 'File loopback running' : '';
+    // UDP datagrams or TUN packets: the same counters
+    const txNet = tx.mode === 'udp' || tx.mode === 'tun', rxNet = rx.mode === 'udp' || rx.mode === 'tun';
+    const w = tx.mode === 'tun' || rx.mode === 'tun' ? 'packets' : 'datagrams';
     stat('udp_stat', [
-      ['TX datagrams in', tx.mode === 'udp' ? `${fmt(tx.udp_packets)} (${fmt(tx.udp_bytes)} B)` : '—'],
-      ['TX dropped (link too slow)', tx.mode === 'udp' ? fmt(tx.udp_drops) : '—', tx.udp_drops ? 'result bad' : ''],
-      ['TX idle fill', tx.mode === 'udp' ? fmt(tx.fill) + ' B' : '—'],
-      ['RX datagrams out', rx.mode === 'udp' ? `${fmt(rx.udp_packets)} (${fmt(rx.udp_bytes)} B)` : '—'],
-      ['RX lost / bad CRC', rx.mode === 'udp' ? `${fmt(rx.udp_lost)} / ${fmt(rx.udp_bad)}` : '—', rx.udp_lost || rx.udp_bad ? 'result bad' : ''],
-      ['Saved', c.saved || '—'],
+      ...(c.tun ? [['Interface ' + c.tun, (c.tun_up ? 'up' : 'DOWN') + (c.tun_addr ? ' · ' + c.tun_addr : ' · no IPv4 address') +
+                    (c.tun_mtu ? ' · MTU ' + c.tun_mtu : '') + (s.link ? (c.tun_carrier ? ' · carrier' : ' · no carrier') : ''),
+                    c.tun_up && c.tun_addr ? '' : 'result bad']] : []),
+      // two-way link (B210 --host): hellos in both directions
+      ...(s.link ? [['Link (station ' + c.host + ')', linkText(s.link, tx, rx), s.link.up ? 'result ok' : 'result bad'],
+                    ['Hellos sent / received', `${fmt(s.link.hellos_tx)} / ${fmt(s.link.hellos_rx)}` +
+                     (s.link.hello_age >= 0 ? ` · last ${fmt(s.link.hello_age, 1)} s ago` : '')],
+                    ['Packets dropped (link down)', fmt(s.link.link_drops), s.link.link_drops ? 'result bad' : '']] : []),
+      ['TX ' + w + ' in', txNet ? `${fmt(tx.udp_packets)} (${fmt(tx.udp_bytes)} B)` : '—'],
+      ['TX dropped (link too slow)', txNet ? fmt(tx.udp_drops) : '—', tx.udp_drops ? 'result bad' : ''],
+      ['TX idle fill', txNet ? fmt(tx.fill) + ' B' : '—'],
+      ['RX ' + w + ' out', rxNet ? `${fmt(rx.udp_packets)} (${fmt(rx.udp_bytes)} B)` : '—'],
+      ['RX lost / bad CRC', rxNet ? `${fmt(rx.udp_lost)} / ${fmt(rx.udp_bad)}` : '—', rx.udp_lost || rx.udp_bad ? 'result bad' : ''],
+      ...(caps.save ? [['Saved', c.saved || '—']] : []),
     ]);
   }
   const lp = $('lockpill');
@@ -445,7 +492,8 @@ function render(s) {
   stat('tx_bb', [
     ['Data rate (every 0.5 s)', tx.on ? bps(capRate(tx.rate_bps, tx.capacity_bps)) : '—'],
     ['MODCOD capacity', tx.on ? usage(tx.rate_bps, tx.capacity_bps) : '—'],
-    ['Data source', tx.mode === 'file' ? 'File ' + tx.file : tx.mode === 'udp' ? 'UDP ' + c.udp_in : 'PRBS-23 (FPGA)'],
+    ['Data source', tx.mode === 'file' ? 'File ' + tx.file : tx.mode === 'udp' ? 'UDP ' + c.udp_in
+                    : tx.mode === 'tun' ? 'Network interface ' + c.tun : 'PRBS-23 (FPGA)'],
     ['Frames encoded / sent', fmt(tx.frames_encoded) + ' / ' + fmt(tx.frames_sent)],
     ['Dummy frames', fmt(tx.dummy)],
     [caps.tx_under, fmt(tx.duc_underflow) + ' / ' + fmt(tx.host_underflow),
@@ -461,7 +509,7 @@ function render(s) {
     ['LDPC iterations / dropped', `${rx.ldpc_iters} / ${fmt(rx.ldpc_drop)}`],
     ['BCH corrected / failed', `${fmt(rx.bch_corr)} / ${fmt(rx.bch_fail)}`, rx.bch_fail ? 'result bad' : ''],
     ['BBFRAME OK / CRC error', `${fmt(rx.bb_ok)} / ${fmt(rx.bb_crc)}`],
-    ['BER', rx.mode === 'prbs' ? (rx.ber_lock ? `${ber.toExponential(2)} (${fmt(rx.ber_errors)}/${fmt(rx.ber_bits)})` : 'Not synced') : rx.mode === 'udp' ? 'UDP mode' : 'File mode'],
+    ['BER', rx.mode === 'prbs' ? (rx.ber_lock ? `${ber.toExponential(2)} (${fmt(rx.ber_errors)}/${fmt(rx.ber_bits)})` : 'Not synced') : rx.mode === 'udp' ? 'UDP mode' : rx.mode === 'tun' ? 'Network interface mode' : 'File mode'],
     [caps.rx_over, fmt(rx.host_overflow),rx.host_overflow ? 'result bad' : ''],
   ]);
   const fs = ['Waiting for header', 'Receiving', 'Done'][rx.file_state] || '—';
@@ -476,7 +524,7 @@ function render(s) {
     ['Time remaining (est.)', rx.file_state === 1 && rx.file_len && rx.file_bps > 0 ? dur((rx.file_len - rx.file_written) * 8 / rx.file_bps) : '—'],
     ['Sequence gaps', fmt(rx.seq_gaps), rx.seq_gaps ? 'result bad' : ''],
     ['Comparison', res || '—', res.startsWith('identical') ? 'result ok' : res ? 'result bad' : ''],
-  ] : [['Mode', (tx.on && rx.on) ? (c.data === 'udp' ? 'UDP data' : 'PRBS test') + ' (choose a file and press "Send file" to start a file loopback)' : 'File transfer needs TX and RX on'],
+  ] : [['Mode', (tx.on && rx.on) ? (MODE_LABEL[c.data] || 'PRBS test') + ' (choose a file and press "Send file" to start a file loopback)' : 'File transfer needs TX and RX on'],
         ...(res ? [['Message', res, 'result bad']] : [])]);
   $('prog').value = rx.file_len ? rx.file_written / rx.file_len : 0;
   addRatePoint(rx);

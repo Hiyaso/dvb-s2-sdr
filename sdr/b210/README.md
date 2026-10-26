@@ -20,7 +20,10 @@ B210 FPGA radio 0                                B210 FPGA radio 0
 ```
 
 * Payload modes: PRBS-23 BER test, file transfer (header + length, sequence-numbered bytes), raw
-  stdin/stdout stream, UDP datagrams (each datagram framed with CRC and sequence number).
+  stdin/stdout stream, UDP datagrams (each datagram framed with CRC and sequence number), and a
+  **TUN network interface**: a routed IP link where every IP packet sent to `dvbs0` crosses DVB-S2.
+  Two-way with `--host N` (station 1 = 10.60.0.1, station 2 = 10.60.0.2, one frequency per direction; traffic
+  flows only while both directions are decoded), or one-way TX 10.60.0.1 → RX 10.60.0.2; the web page shows the status.
 * Payload capacity at 1 Msym/s with pilots: QPSK 1/2 ≈ 104 kB/s, 8PSK 2/3 ≈ 236 kB/s, 8PSK 8/9 ≈ 316 kB/s,
   proportional to the symbol rate. The program sends at 90 % of capacity; the FPGA inserts dummy frames when
   there is no data.
@@ -36,7 +39,9 @@ B210 FPGA radio 0                                B210 FPGA radio 0
 | `patch_uhd_fpga.py` | Adds the modem to the B210 FPGA in a UHD source tree, with a new `make B210_DVBS2` target |
 | `build_fpga.sh` | One step: fetch the UHD source matching the installed UHD → patch → ISE build |
 | `host/dvbs2_b210.cpp` | PC program (UHD C++), built with `host/build.sh`; built-in web server with `--web` |
-| `../host_common/` | Headers shared with the ADRV9364 program (UDP framing, file transfer, spectrum / SNR, mini HTTP server) and the web page `web/index.html` |
+| `host/dvbs2_b210.conf` | Example configuration file (`--config`): station 1 of the two-way IP link, every key explained |
+| `../host_common/` | Headers shared with the ADRV9364 program (UDP framing, file transfer, spectrum / SNR, mini HTTP server) and the web page `web/index.html`; `net_tun.hpp` (TUN interface) is used by this program only |
+| `host/test_tun.sh`, `host/test_tun.cpp` | Test of the TUN / UDP packet path without a B210 (socket pairs; with `sudo ... netns`, two real TUN interfaces in network namespaces) |
 | `sim/tb_b210.v`, `sim/reg_b210.sh` | Two "B210s" with a channel model between them; PRBS and file modes |
 
 **Verification status**
@@ -47,6 +52,14 @@ B210 FPGA radio 0                                B210 FPGA radio 0
   below frame capacity (dummy frames in between) 0 errors.
 * The B210-specific RTL variants (folded FIR, Spartan-6 byte-write RAM) are bit-exact with the Z7020 build
   (LDPC, TX and system regressions).
+* TUN / UDP packet path (`host/test_tun.sh`, the program's own code with an emulated link): 3000 packets of
+  20–9000 B arrive intact and in order; with 1 byte in 20000 corrupted every damaged packet is dropped by
+  the CRC and counted (2873 received + 127 lost = 3000); with input at twice the link rate the 0.2 s queue
+  drops the excess and the rest arrives intact. Two-way link check (two stations over the emulated air): the link
+  comes up after the first hellos, 200 packets each way arrive with no hello leaked into the interface; cutting
+  one direction takes both stations down within 2 s and the packets are held back; restoring it brings the link
+  up again. The root test with real TUN interfaces and carrier (`sudo host/test_tun.sh netns`) and the TUN mode on
+  the B210 itself have not been run yet.
 * The patch applies to UHD v4.1.0.5, v4.6.0.0, v4.8.0.0, v4.11.0.0 and master.
 * ISE 14.7 build against UHD 4.11.0.0: routed, all timing constraints met (radio clock checked at 61.44 MHz).
 * **Hardware** (one B210, web mode, antennas, 1 GHz, 2 MHz, gains 40 dB): 8PSK 2/3 with pilots locks,
@@ -57,6 +70,9 @@ B210 FPGA radio 0                                B210 FPGA radio 0
 ## Hardware requirements
 
 * **Ettus USRP B210** on a USB 3 port. For a two-board test, two B210s and two PCs (or one PC per board).
+* For the IP link (TUN): one B210 and one PC per station. One-way (TX station → RX station) carries UDP;
+  ping, TCP and other two-way traffic need both stations in `--mode trx` on two frequencies.
+  Creating the TUN interface and setting its address needs root (`sudo`), or a one-time setup by root (see below).
 * RF: antennas, or a cable with **at least 30 dB attenuation** between TX and RX (a direct connection can
   damage the receiver). Transmit over the air only on frequencies you are licensed for.
   For very low symbol rates connect both REF IN to the same 10 MHz and use `--ref external`.
@@ -105,10 +121,13 @@ sdr/b210/host/build.sh            # -> sdr/b210/host/build/dvbs2_b210
 
 Without cmake, `build.sh` compiles directly with g++.
 
-### Simulation
+### Simulation and tests
 
 ```bash
 sdr/b210/sim/reg_b210.sh          # outputs in sdr/b210/sim/out
+sdr/b210/host/test_tun.sh         # TUN / UDP packet path without a B210 (no root), expect PASS
+sudo sdr/b210/host/test_tun.sh netns   # the same with real TUN interfaces in two network namespaces and the
+                                       # two-way link check: carrier, ping both ways, UDP, TCP (iperf3); expect PASS
 ```
 
 ## Usage
@@ -166,7 +185,101 @@ RX LOCK 8PSK 2/3 pil FLL3 CFO   +2315.4 Hz | frames 812 miss 0 | LDPC it  6 drop
 * UDP semantics: no retransmission. Datagrams sent before RX locks are lost; above the MODCOD capacity TX keeps
   only ≈ 0.2 s of queue and drops the rest (`dropped`).
 * IPv4 only. `--udp-in` listens on 127.0.0.1 by default (no authentication: anyone who can reach the port can
-  transmit over RF). `--udp-in` cannot be combined with `--input`, `--udp-out` not with `--output`, and neither with `--web`.
+  transmit over RF). `--udp-in` cannot be combined with `--input`, `--udp-out` not with `--output`.
+  With `--web` the UDP mode is selected on the page (Data Link card), next to PRBS and the network interface.
+
+### IP link over DVB-S2 (TUN network interface)
+
+`--tun dvbs0` creates (or attaches to) the TUN interface `dvbs0`. Every IP packet the kernel routes to it is
+framed like a UDP datagram above (CRC, sequence number, 0.2 s drop queue) and sent over DVB-S2; the receiving
+station writes each recovered packet into its own `dvbs0`. The interface stays while the program runs, also
+when the web page restarts the streams.
+
+**Two-way link (`--host N`).** Each station sends and receives on one address, `10.60.0.N`: station 1 is
+10.60.0.1, station 2 is 10.60.0.2. `--host` sets `--mode trx`, `--tun dvbs0` and the address, and splits the
+two directions over two frequencies (FDD): host 1 transmits on `--freq` and receives on `--freq + --duplex`
+(default 10 MHz), the other host the other way round.
+
+```bash
+# PC1, station 1: dvbs0 = 10.60.0.1/24, TX 2450 MHz, RX 2460 MHz
+sudo ./dvbs2_b210 --host 1 --web 8080 --on --fpga usrp_b210_dvbs2_fpga.bin --freq 2.45e9 --bw 2e6 --tx-gain 60 --rx-gain 40
+# PC2, station 2: dvbs0 = 10.60.0.2/24, TX 2460 MHz, RX 2450 MHz
+sudo ./dvbs2_b210 --host 2 --web 8080 --on --fpga usrp_b210_dvbs2_fpga.bin --freq 2.45e9 --bw 2e6 --tx-gain 60 --rx-gain 40
+```
+
+Or with the example file on both PCs: `sudo ./dvbs2_b210 --config dvbs2_b210.conf` (station 1) and
+`sudo ./dvbs2_b210 --config dvbs2_b210.conf --host 2` (see [Configuration file](#configuration-file)).
+
+The IP link carries traffic only while the DVB-S2 link works in both directions. Each station sends a small
+hello (20 bytes) every 0.5 s inside its payload stream, saying whether it decodes the other one. The link is
+**up** when a station decodes the peer's hellos and the peer reports that it decodes ours; it goes down 2 s
+after that stops. While down, `dvbs0` has no carrier (`ip link` shows `NO-CARRIER`), so the kernel does not send
+to it, and packets that still arrive are dropped and counted. The program prints `link UP: peer 10.60.0.2, both
+directions decoded` / `link down: ...` on every change and the state once per second.
+
+```bash
+ip link show dvbs0           # LOWER_UP = link up, NO-CARRIER = down
+ping 10.60.0.2               # from station 1; ssh, TCP, iperf3 work as on any slow link
+# UDP both ways:   PC2: nc -u -l 10.60.0.2 5000     PC1: nc -u 10.60.0.2 5000   (type on either side)
+```
+
+* `--subnet 10.60.0.0/24` sets the network (station N = subnet + N); `--duplex` the distance of the two
+  frequencies; `--tx-freq` / `--rx-freq` override the plan. `--host` is point-to-point: two stations.
+* `--on` starts TX and RX at once (in web mode they are otherwise off until switched on in the page).
+  Open `http://localhost:8080` on each PC (add `--web-bind 0.0.0.0` to open it from elsewhere): the
+  **Data Link (network interface)** card shows the interface (address, carrier), the link
+  (`Connected to 10.60.0.2 · both directions decoded`, or why it is down: no hello from the peer / the peer
+  does not decode us yet / TX or RX off), hellos sent and received, and the packet counters.
+* Without running the program as root, let root create the interface once (it is then kept until reboot)
+  and start the program as your user:
+  ```bash
+  sudo ip tuntap add dev dvbs0 mode tun user $USER
+  sudo ip addr add 10.60.0.1/24 dev dvbs0      # 10.60.0.2/24 on station 2
+  sudo ip link set dvbs0 up
+  ```
+  Switching the carrier needs Linux 5.0 or later; on older kernels the carrier stays on and the program
+  only drops the packets while the link is down.
+* Capacity is the payload rate above, in each direction (e.g. 8PSK 2/3 at 2 MHz ≈ 300 kB/s); traffic above it
+  is dropped at TX after 0.2 s of queue. Latency is about 50 ms one way (UHD TX buffering). The kernel also sends
+  a few IPv6 link-local packets when the carrier comes up; `sudo sysctl -w net.ipv6.conf.dvbs0.disable_ipv6=1`
+  stops them.
+* There is no encryption or authentication on the air, and anything routed to `dvbs0` is transmitted. Do not
+  enable IP forwarding into `dvbs0` unless that is intended.
+
+**One-way link** (one transmitter, one receiver, UDP only: ping replies and TCP acknowledgements need the way
+back). `--mode tx --tun dvbs0` gives 10.60.0.1/24, `--mode rx --tun dvbs0` 10.60.0.2/24 (`--tun-addr` to change,
+`none` to leave it as it is). There is no link check: the interface has carrier all the time.
+
+```bash
+sudo ./dvbs2_b210 --mode tx --tun dvbs0 --web 8080 --on --freq 2.45e9 --bw 2e6 --tx-gain 60   # PC1
+sudo ./dvbs2_b210 --mode rx --tun dvbs0 --web 8080 --on --freq 2.45e9 --bw 2e6 --rx-gain 40   # PC2
+echo "hello over DVB-S2" | nc -u -w1 10.60.0.2 5000                                            # PC1 -> PC2
+```
+
+`--mode trx --tun` on one B210 with TX and RX on the same frequency sends the packets back to its own
+interface; the program prints a note in that case.
+
+### Configuration file
+
+Defaults can be kept in a file instead of on the command line: `--config FILE` reads `key = value` lines,
+where the keys are the long option names (`dvbs2_b210 --help`), switches take `1` / `0`, and `#` starts a comment.
+Options given on the command line override the file. [`host/dvbs2_b210.conf`](host/dvbs2_b210.conf) is an
+example for the two-way IP link above.
+
+```bash
+sudo ./dvbs2_b210 --config dvbs2_b210.conf               # station 1 (10.60.0.1), as in the file
+sudo ./dvbs2_b210 --config dvbs2_b210.conf --host 2      # station 2 (10.60.0.2) from the same file
+```
+
+`--save-config FILE` writes the options given (command line and `--config`) to FILE and exits, so a working
+command line can be turned into a file:
+
+```bash
+./dvbs2_b210 --mode rx --tun dvbs0 --web 8080 --on --freq 2.45e9 --bw 2e6 --rx-gain 40 --save-config rx.conf
+sudo ./dvbs2_b210 --config rx.conf
+```
+
+An unknown key or a value that does not parse stops the program with the file name in the message.
 
 ### One B210 transmitting to itself
 
@@ -186,6 +299,15 @@ Use `--mode trx` (TX on TX/RX A, RX on RX2 A, cable + attenuator), or the web mo
 | `--preamble 1.0` | Seconds of fill before a file (RX lock time) |
 | `--tx-gain` / `--rx-gain` | AD9361 gains; the RX AGC runs in the FPGA |
 | `--args serial=...` | Select a device. The program adds `recv_frame_size=16360,send_frame_size=16360` (largest USB packets, about half the CPU load) unless you set them |
+| `--host N` | Two-way IP link station N: `--mode trx`, `--tun dvbs0` with address 10.60.0.N, host 1 TX `--freq` / RX `--freq + --duplex`, other hosts swapped; IP traffic only while both directions are decoded |
+| `--subnet A/N`, `--duplex HZ` | `--host`: network of the link (default 10.60.0.0/24), distance of the two frequencies (default 10 MHz) |
+| `--tun NAME` | TX and RX payload = IP packets of TUN interface NAME (created if needed; root or a prepared interface) |
+| `--tun-addr A/N` | IPv4 address of the TUN interface (default `--mode tx` 10.60.0.1/24, `rx` 10.60.0.2/24; `none` = leave it) |
+| `--tun-mtu N` | TUN MTU (default 1500; 0 = leave it) |
+| `--data prbs\|udp\|tun` | Web mode: payload at start (default `tun` with `--tun`, `udp` with `--udp-in`/`--udp-out`, else `prbs`) |
+| `--on` | Web mode: TX and RX switched on at start |
+| `--config FILE` | Read defaults from FILE (`key = value`, long option names); the command line wins |
+| `--save-config FILE` | Write the given options to FILE and exit |
 
 ### Register interface
 
@@ -227,8 +349,12 @@ cd sdr/b210/host/build
 
 * The page is [`../host_common/web/index.html`](../host_common/web/index.html), shared with the ADRV9364 program.
   The program serves it from `<program>/../web` if that exists, otherwise from `sdr/host_common/web` in the source
-  tree (`--web-root DIR` overrides). Cards that the B210 program does not support (modem settings, UDP) are hidden.
-* **TX and RX are off at start.** Toggle them with the Off/On buttons on the TX and RX cards. With TX off no TX
+  tree (`--web-root DIR` overrides). The modem settings card (MODCOD etc. are command-line options here) is hidden.
+* **Data Link card** (shown when the program was started with `--tun` and/or `--udp-in`/`--udp-out`): buttons to
+  switch the payload between PRBS test, UDP data and network interface; the TUN interface name, state, address and
+  MTU; packet counters (TX in / dropped / idle fill, RX out / lost / bad CRC). The UDP addresses are shown but set on
+  the command line. After a file loopback test, "Back to network interface" / "Back to UDP data" returns to the link.
+* **TX and RX are off at start** (unless `--on`). Toggle them with the Off/On buttons on the TX and RX cards. With TX off no TX
   stream runs and UHD switches off the AD9361 TX chain; with RX off there is no RX stream and no spectrum.
   Each toggle restarts the streams (1–2 s). The file self-test needs both on.
 * Defaults: `--mode trx`, TX/RX at **1 GHz**, bandwidth **2 MHz** (Rs = 1.4815 Msym/s, roll-off 0.35), gains
@@ -275,4 +401,10 @@ cd sdr/b210/host/build
   * `POST /api/config`: form fields `tx_freq`, `tx_bw`, `tx_gain`, `rx_freq`, `rx_bw`, `rx_gain` (Hz / dB),
     `tx_on`, `rx_on` (1/0).
   * `POST /api/send?name=FILE` (body = file, up to 2 GB; at ≈ 300 kB/s, 1 GB takes about an hour),
-    `POST /api/prbs`, `GET /api/received`.
+    `GET /api/received`.
+  * `POST /api/prbs`, `POST /api/udp`, `POST /api/tun`: switch the payload mode (UDP / TUN only when started with
+    them). `/api/status` reports it in `config.data`, the interface in `config.tun`, `tun_up`, `tun_addr`, `tun_mtu`, `tun_carrier`,
+    with `--host` the station in `config.host` and the link in `link.up`, `hears`, `peer_hears`, `peer`, `hello_age` (s),
+    `hellos_tx`, `hellos_rx`, `link_drops`,
+    and the packet counters in `tx.udp_packets`, `udp_bytes`, `udp_drops`, `fill`, `rx.udp_packets`, `udp_bytes`,
+    `udp_lost`, `udp_bad` (also for TUN); `tx.mode` / `rx.mode` are `prbs`, `file`, `udp` or `tun`.

@@ -16,5 +16,5 @@ log "FEC chain (demap+LDPC+BCH)";    ./reg_fec.sh  2>&1 | tee out/run_fec.log
 log "PLS Hadamard transform";        (./vl.sh tb_wht out/wht > /dev/null && out/wht/obj/tb_wht | grep -E "PASS|FAIL") 2>&1 | tee out/run_wht.log
 log "RX front end (AGC, timing)";    ./reg_rxfe.sh 2>&1 | tee out/run_rxfe.log
 log "full loopback";                 ./reg_sys.sh ${1:-quick} 2>&1 | tee out/run_sys.log
-log "B210 integration (2 boards)";   ../b210/sim/reg_b210.sh 2>&1 | tee out/run_b210.log
-echo; echo "logs in sim/out/run_*.log (B210 runs in b210/sim/out)"
+log "B210 integration (2 boards)";   ../sdr/b210/sim/reg_b210.sh 2>&1 | tee out/run_b210.log
+echo; echo "logs in sim/out/run_*.log (B210 runs in sdr/b210/sim/out)"

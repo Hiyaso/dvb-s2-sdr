@@ -6,8 +6,8 @@
 #   ./setup_ubuntu.sh --check    install nothing, only report what is missing
 #
 # Not installed by this script (vendor downloads + licenses):
-#   * Xilinx Vivado  (Z7020 / PYNQ-Z2 bitstream, XSim)      -> z7020/vivado/
-#   * Xilinx ISE 14.7 (USRP B210 FPGA image, LX150 licence)  -> b210/build_fpga.sh
+#   * Xilinx Vivado  (Z7020 / PYNQ-Z2 bitstream, XSim)      -> sdr/z7020/vivado/
+#   * Xilinx ISE 14.7 (USRP B210 FPGA image, LX150 licence)  -> sdr/b210/build_fpga.sh
 set -e
 cd "$(dirname "$0")"
 ROOT=$(pwd)
@@ -76,7 +76,7 @@ command -v vivado >/dev/null && echo "   vivado: $(command -v vivado)" || echo "
 if [ $WANT_UHD = 1 ]; then
   echo
   echo "== B210 host program"
-  b210/host/build.sh
+  sdr/b210/host/build.sh
   echo "   (USRP images for the stock FPGA: sudo uhd_images_downloader)"
 fi
 

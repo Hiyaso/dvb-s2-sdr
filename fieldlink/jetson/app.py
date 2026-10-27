@@ -28,7 +28,7 @@ from aiohttp import WSMsgType, web
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from common.link import Link  # noqa: E402
+from common.link import make_link  # noqa: E402
 from common.protocol import (STATUS_LABELS, MsgType, now_iso, pack_json, pack_report,  # noqa: E402
                              pack_thumb, unpack_json)
 from jetson import fusion  # noqa: E402
@@ -74,7 +74,7 @@ class JetsonNode:
         self.yolo_state = "disabled"
         # YOLO 專用單執行緒：模型載入與推論在同一條執行緒，CUDA context 不跨執行緒
         self.yolo_exec = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="yolo")
-        self.link = Link(cfg["link"], "jetson", self._on_link_thread, base_dir=ROOT)
+        self.link = make_link(cfg["link"], "jetson", self._on_link_thread, base_dir=ROOT, auto_commit=True)
         self.data_dir = ROOT / "data" / "jetson"
         (self.data_dir / "images").mkdir(parents=True, exist_ok=True)
         self.report_log = open(self.data_dir / "reports.jsonl", "a", encoding="utf-8")
@@ -233,7 +233,10 @@ class JetsonNode:
 
     def settings(self) -> dict:
         c = self.cfg["capture"]
-        return {k: typ(c.get(k)) for k, (_, _, typ) in self.SETTINGS.items() if c.get(k) is not None}
+        d = {k: typ(c.get(k)) for k, (_, _, typ) in self.SETTINGS.items() if c.get(k) is not None}
+        if self.link.mode == "multi":
+            d["link"] = self.link.active          # 資料走哪條鏈路（tcp = OneWeb，fpga = USRP），儀表板可切換
+        return d
 
     def apply_settings(self, new: dict, source: str) -> bool:
         """只接受認得的鍵、夾在範圍內；回傳是否有變更。"""
@@ -247,6 +250,10 @@ class JetsonNode:
                 continue
             if self.cfg["capture"].get(k) != v:
                 self.cfg["capture"][k] = v
+                changed = True
+        if "link" in (new or {}) and self.link.mode == "multi":
+            # 切換資料鏈路：先啟動新的，地面站在新鏈路上說話後才停舊的（common/link.py MultiLink）
+            if self.link.begin_switch(str(new["link"])):
                 changed = True
         if changed:
             log.info("套用設定：%s（%s）", self.settings(), source)
@@ -313,7 +320,7 @@ class JetsonNode:
         nid = int(n["id"])
         key = (n.get("boot"), nid)
         # 地面站會重送直到收到 ACK，所以重複的通知只回 ACK 不重複顯示
-        self.link.send(MsgType.NOTIFY_ACK, pack_json({"id": nid, "node": self.node_id, "ts": now_iso()}), priority=0)
+        self.link.send(MsgType.NOTIFY_ACK, pack_json({"id": nid, "node": self.node_id, "ts": now_iso()}), priority=0, via="all")
         if key in self.seen_notify:
             return
         self.seen_notify.add(key)
@@ -340,7 +347,7 @@ class JetsonNode:
             if s.get("settings"):
                 self.apply_settings(s["settings"], "地面站")
         self.link.send(MsgType.SELECT_ACK, pack_json({"id": sid, "node": self.node_id, "selected": self.selected,
-                                                      "settings": self.settings(), "ts": now_iso()}), priority=0)
+                                                      "settings": self.settings(), "ts": now_iso()}), priority=0, via="all")
 
     def modem_brief(self) -> dict | None:
         """本機數據機的接收（= 上行）品質與發射狀態，放進心跳給地面站看。"""
@@ -362,15 +369,26 @@ class JetsonNode:
                 "yolo_model": self.detector.model_name if self.detector else None, "yolo_state": self.yolo_state,
                 "last_error": self.last_error, "reports": self.reports_sent, "skipped": self.skipped,
                 "thumbs": self.thumbs_sent, "modem": self.modem_brief(),
-                "link": {k: v for k, v in self.link.stats().items()
-                         if k in ("mode", "state", "messages", "crc_errors", "cc_errors", "restarts", "queue",
-                                  "transport", "connected", "peer", "since", "rtt_ms", "retrans")}}
+                "link": self.link_brief()}
+
+    def link_brief(self) -> dict:
+        """鏈路狀態精簡版（心跳與 /api/state 用）；multi 模式含每條子鏈路。"""
+        st = self.link.stats()
+        keys = ("mode", "state", "messages", "crc_errors", "cc_errors", "restarts", "queue",
+                "transport", "connected", "peer", "since", "rtt_ms", "retrans",
+                "active", "switching", "last_switch", "last_rx", "rx_by", "tx_by")
+        out = {k: v for k, v in st.items() if k in keys}
+        if st.get("links"):
+            out["links"] = {n: {k: v for k, v in sub.items()
+                                if k in ("mode", "state", "running", "ready", "connected", "peer", "rtt_ms", "retrans", "restarts", "messages")}
+                            for n, sub in st["links"].items()}
+        return out
 
     async def _heartbeat_loop(self):
         period = float(self.cfg.get("heartbeat_s", 2))
         while True:
             s = self.state()
-            self.link.send(MsgType.HEARTBEAT, pack_json(s), priority=1)
+            self.link.send(MsgType.HEARTBEAT, pack_json(s), priority=1, via="all")   # multi：每條可用鏈路都送，地面站才知道兩條都活著
             await self.broadcast({"type": "state", "state": s})
             await asyncio.sleep(period)
 

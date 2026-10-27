@@ -152,6 +152,17 @@ function showState(s) {
   const tcp = l.transport === "tcp";
   const tcpTxt = !tcp ? "" : l.connected ? `OneWeb／網路 TCP 已連上 ${esc(l.peer || "")}${l.rtt_ms != null ? `，RTT ${l.rtt_ms} ms` : ""}` :
     `<span class="bad">網路 TCP 未連上 ${esc(l.peer || "")}（重試中）</span>`;
+  if (l.mode === "multi") {
+    const LN = { tcp: "OneWeb", fpga: "USRP" }, ls = l.links || {}, active = l.active, sw = l.switching;
+    const t = ls.tcp || {}, f = ls.fpga || {};
+    const sw2 = ["tcp", "fpga"].map((n) => `<button type="button" data-link="${n}" ${sw ? "disabled" : ""} style="margin-left:6px;font:inherit;font-size:13px;border:1px solid var(--line);background:${active === n ? "var(--accent)" : "transparent"};color:${active === n ? "#0E1419" : "var(--accent)"};border-radius:4px;padding:1px 8px;cursor:pointer">${LN[n]}</button>`).join("");
+    const lsw = l.last_switch;
+    $("link").innerHTML = `資料走 <b>${LN[active] || active || "—"}</b>${sw ? `（切換中 → ${LN[sw.to] || sw.to}，${Math.round(sw.age_s || 0)} 秒）` : ""}${lsw && lsw.result !== "ok" && Date.now() / 1000 - lsw.ts < 180 ? `<span class="bad">（切到 ${LN[lsw.to] || lsw.to} 失敗，維持 ${LN[active] || active}）</span>` : ""}${sw2}<br>` +
+      `OneWeb：${!t.running ? "未啟動" : t.connected ? `已連上 ${esc(t.peer || "")}${t.rtt_ms != null ? `，RTT ${t.rtt_ms} ms` : ""}` : `<span class="bad">未連線（${esc(t.state || "—")}）</span>`}；` +
+      `USRP：${!f.running ? "未啟動" : f.ready ? "數據機運作中" : `<span class="bad">不可用（${f.state === "error" ? "找不到 USRP" : esc(f.state || "—")}）</span>`}；收到 ${l.messages ?? 0} 則，CRC 錯誤 ${l.crc_errors ?? 0}`;
+    for (const b of $("link").querySelectorAll("button[data-link]"))
+      b.onclick = () => fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: { link: b.dataset.link } }) });
+  } else
   $("link").innerHTML = (tcp ? tcpTxt : (l.state === "running" ? "" : '<span class="bad">') + (LINK[l.state] || l.state || "—") +
     (l.state === "running" ? "" : "</span>")) + `，收到 ${l.messages ?? 0} 則，CRC 錯誤 ${l.crc_errors ?? 0}`;
   $("sent").textContent = `${s.reports} 筆報告、${s.thumbs ?? 0} 張縮圖` + (s.skipped ? `，因推論太慢略過 ${s.skipped} 次` : "");

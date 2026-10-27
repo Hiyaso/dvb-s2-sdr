@@ -14,9 +14,9 @@
                               地面站電腦（路由器轉發 TCP 6767）：儀表板（手機清單、縮圖、選手機、鏈路狀態）、SQLite、影像存檔、CSV 匯出
 ```
 
-**鏈路（2026-10-27 起）**：OneWeb 衛星上網 ＋ 網際網路，`link.mode: tcp`。OneWeb 終端在 CGNAT 後面不能被連入，所以由 Nano 當 TCP client 連到地面站的對外位址
+**鏈路（2026-10-27 起）**：OneWeb 衛星上網與 USRP DVB-S2 無線**二選一、儀表板可切換**（`link.mode: multi`，預設走 OneWeb；一次只跑一條，切換是先啟動新鏈路、兩邊都通了才停舊的，實測 3–8 秒）。OneWeb 走 `tcp` 模式：OneWeb 終端在 CGNAT 後面不能被連入，所以由 Nano 當 TCP client 連到地面站的對外位址
 （路由器把 TCP 6767 轉發到地面站電腦），指令從同一條連線回送。TCP 本身可靠，不再需要為掉包重送，也不節流。
-**備用鏈路**：自建的 DVB-S2 無線鏈路（`link.mode: fpga`），數據機跑在 USRP B210 的 FPGA 裡（[dvb-s2-sdr](https://github.com/Hiyaso/dvb-s2-sdr) 專案的 `dvbs2_b210` 程式＋自製 image），
+**USRP 鏈路**：自建的 DVB-S2 無線鏈路（`fpga` 模式），數據機跑在 USRP B210 的 FPGA 裡（[dvb-s2-sdr](https://github.com/Hiyaso/dvb-s2-sdr) 專案的 `dvbs2_b210` 程式＋自製 image），
 兩端各一個 `dvbs2_b210` 行程同時收發，應用程式只對本機 UDP 埠讀寫。舊的 gr-dvbs2rx 路線（`dvbs2` 模式）仍保留但不再需要。
 架構圖：[docs/架構圖_oneweb.svg](docs/架構圖_oneweb.svg)（OneWeb 版）、[docs/架構圖.svg](docs/架構圖.svg)（DVB-S2 版）。
 
@@ -35,7 +35,7 @@
 | `jetson/static/monitor.html` | Jetson 螢幕監控頁，通知會全螢幕跳出 |
 | `ground/app.py`、`ground/storage.py` | 地面站主程式與資料保存 |
 | `ground/static/index.html` | 地面站儀表板（深色地面站風格：頂部列＋時鐘、狀態橫幅、指標卡、手機面板、即時縮圖、**資料鏈路面板**（tcp：連線／RTT／重傳；fpga：DVB-S2 接收含頻譜與瀑布圖）、上行狀態、時間軸、紀錄、通知） |
-| `common/link.py` | 鏈路：`tcp`（OneWeb／網際網路，預設；Nano 為 client、地面站為 server，可接多台）/ `fpga`（dvbs2_b210，備用；並用 `--status-udp` 收數據機每秒的狀態與頻譜 JSON）/ `udp`（開發用）/ `dvbs2`、`loopback`（舊的 gr-dvbs2rx） |
+| `common/link.py` | 鏈路：`multi`（預設：`tcp`／`fpga` 擇一、儀表板切換，`MultiLink`）/ `tcp`（OneWeb／網際網路；Nano 為 client、地面站為 server，可接多台）/ `fpga`（dvbs2_b210；並用 `--status-udp` 收數據機每秒的狀態與頻譜 JSON）/ `udp`（開發用）/ `dvbs2`、`loopback`（舊的 gr-dvbs2rx） |
 | `common/ts.py` | MPEG-TS 分段重組（CRC32、continuity counter） |
 | `radio/usrp_bridge.py` | （舊路線）讓 TX、RX 共用同一台 USRP 的 GNU Radio flowgraph |
 | `config/*.yaml` | 兩端設定 |
@@ -95,7 +95,22 @@ TensorRT 引擎綁定 GPU 與 TensorRT 版本，升級 JetPack 後請刪掉 `.en
 
 鏈路問題：tcp 模式看 `logs/jetson_app.log`／`logs/ground_app.log` 的 `TCP` 行與儀表板的資料鏈路面板；fpga 模式看兩端的 `logs/dvbs2_b210.log`（每秒一行：LOCK、CFO、LDPC 迭代、BBFRAME CRC、UDP 封包數、USB 欠載／溢位）。
 
-## 鏈路設定（OneWeb／網際網路，`link.mode: tcp`）
+## 鏈路切換（`link.mode: multi`，預設）
+
+```yaml
+link:
+  mode: multi
+  links: [tcp, fpga]     # OneWeb、USRP
+  active: tcp            # 開機後走哪條（兩邊一樣）
+```
+
+- 平常只跑 `active` 那條。儀表板「資料鏈路」面板的 **OneWeb／USRP** 鈕送 `SELECT settings.link`；流程（`common/link.py` `MultiLink`）：
+  Nano 收到指令回 ACK 並啟動新鏈路 → 地面站收到 ACK 也啟動新鏈路（`begin_switch`）→ 地面站在新鏈路收到 Nano 心跳後，經新鏈路送確認 SELECT → Nano 在新鏈路收到任何訊息就 `commit_switch`（停舊鏈路）並回 ACK → 地面站收到 ACK 也 `commit_switch`。
+  交接期間心跳與 ACK 走兩條（`via="all"` = 所有正在跑的鏈路），報告等資料仍走舊的；新鏈路 60 秒內沒通就 `abort_switch`，維持原鏈路。
+- 實測（2026-10-27）：OneWeb→USRP 約 8 秒（含 dvbs2_b210 啟動與鎖定）、USRP→OneWeb 約 3 秒，各兩次；切完後另一條的行程確實停止（`pgrep dvbs2_b210` 為空）。
+- Nano 的 `/api/select {"settings": {"link": "fpga"}}` 與監控頁的按鈕也能切（本機發起，流程相同）。
+
+## 鏈路設定（OneWeb／網際網路，`tcp`）
 
 ```yaml
 # config/jetson.yaml
@@ -118,7 +133,7 @@ link:
 - 2026-10-27 驗證：本機兩程式經公網位址 123.193.37.73:6767（路由器 hairpin）連線，報告、縮圖、選手機 ACK、通知全部通過；地面站重啟後 Nano 端 8 秒內重連。
   真 Nano 經 OneWeb（終端 192.168.100.1，對外 175.111.235.59）連上：RTT 約 300 ms、TCP 重傳 0、SELECT 來回 0.4 秒；路徑 20 跳（衛星約 120 ms，再經中華電信國際閘道 → 洛杉磯 → Arelion → PCCW → 台灣固網 → 凱擘），見 `docs/架構圖_oneweb.svg` 底部。
 
-## 鏈路設定（備用：FPGA 數據機，`link.mode: fpga`）
+## 鏈路設定（USRP：FPGA 數據機，`fpga`）
 
 兩端 `link.fpga` 的頻率要對調（Jetson 的 `tx_freq` = 地面站的 `rx_freq`，反之亦然），`bw`、`rolloff` 要一致；MODCOD 各自決定，RX 會從 PLHEADER 自動解出。
 2026-10 實測（兩台 NI USRP-2901／B210、天線、同一房間）：

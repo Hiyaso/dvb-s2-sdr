@@ -141,6 +141,10 @@ select[disabled] { opacity: .6; }
 
 /* DVB-S2 */
 #dvbPanel.net .right, #dvbPanel.net .metrics { display: none; }
+.lnksw { display: inline-flex; gap: 4px; vertical-align: middle; margin-right: 6px; }
+.lnksw button { font: inherit; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: transparent; color: var(--muted); padding: 2px 12px; border-radius: 999px; cursor: pointer; }
+.lnksw button.on { background: var(--accent); color: #0b1016; border-color: var(--accent); }
+.lnksw button:disabled { opacity: .5; cursor: default; }
 #dvbPanel.net .body.dvb { grid-template-columns: 1fr; }
 .dvb { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; }
 @media (max-width: 1000px) { .dvb { grid-template-columns: 1fr; } }
@@ -641,42 +645,54 @@ function setMetric(id, value, cls) {
   const box = $(id + "Box");
   if (box) box.className = "metric big" + (cls ? " " + cls : "");
 }
+function dvbChips(m) {
+  const rx = m.rx;
+  const chips = [];
+  chips.push(rx.lock ? `<span class="tag lock">LOCK</span>` : `<span class="tag unlock">未鎖定</span>`);
+  chips.push(`<span class="tag neutral">${rx.modcod === "DUMMY" ? "DUMMY（對方閒置幀）" : esc(rx.modcod || "—")}</span>`);
+  chips.push(`<span class="tag neutral">${rx.pilots ? "導頻 on" : "無導頻"}</span>`);
+  chips.push(`<span class="tag neutral">FLL ${rx.fll_stage ?? "—"}</span>`);
+  chips.push(`<span class="tag neutral">${rx.freq ? (rx.freq / 1e6).toFixed(1) + " MHz" : ""} · ${rx.rs ? (rx.rs / 1e6).toFixed(3) + " Msym/s" : ""} · 增益 ${rx.gain ?? "—"} dB</span>`);
+  return chips.join("");
+}
+function renderDvbBody(m, rm) {
+  const rx = m.rx, tx = m.tx || {};
+  const esn0 = rx.esn0_db;
+  $("mEsn0").innerHTML = `${num(esn0)}<small>dB</small>`;
+  $("mEbn0").textContent = rx.ebn0_db != null ? `Eb/N0 ${num(rx.ebn0_db)} dB` : "M2M4 盲估計";
+  setMetric("mEsn0", esn0, esn0 == null ? "" : esn0 >= 10 ? "ok" : esn0 >= 7 ? "warn" : "crit");
+  // 解碼率：最近一個 PLHEADER 是 dummy 時本機算不出容量，改用 Jetson 心跳回報的下行容量
+  const cap = rx.capacity_bps > 0 ? rx.capacity_bps : (rm && rm.tx && rm.tx.capacity_bps) || 0;
+  const pct = cap > 0 ? Math.min(100, 100 * (rx.rate_bps || 0) / cap) : null;
+  $("mRate").innerHTML = `${pct == null ? "—" : pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}<small>%</small>`;
+  $("mRateS").textContent = cap > 0 ? `${((rx.rate_bps || 0) / 1e3).toFixed(0)} / ${(cap / 1e3).toFixed(0)} kbit/s，${num(rx.frames_per_s, 0)} 幀/秒` : "等待對方資料";
+  setMetric("mRate", pct, pct == null ? "" : "ok");
+  const cfo = rx.cfo_hz;
+  $("mCfo").innerHTML = cfo == null ? "—<small>kHz</small>" : Math.abs(cfo) >= 1000 ? `${(cfo / 1000).toFixed(2)}<small>kHz</small>` : `${cfo.toFixed(0)}<small>Hz</small>`;
+  $("mCfoS").textContent = cfo != null && rx.freq ? `${(cfo / rx.freq * 1e6).toFixed(2)} ppm` : "";
+  $("mLevel").innerHTML = `${num(rx.level_dbfs)}<small>dBFS</small>`;
+  $("mLevelS").textContent = rx.level_dbfs != null && rx.level_dbfs > -3 ? "接近飽和，請降 RX 增益" : rx.rssi_db != null ? `RSSI ${num(rx.rssi_db)} dB` : "";
+  const bad = (v) => v ? ' class="bad"' : "";
+  $("dvbKv").innerHTML =
+    `<dt>幀數 / 漏幀</dt><dd${bad(rx.misses)}>${rx.frames ?? "—"} / ${rx.misses ?? "—"}</dd>` +
+    `<dt>LDPC 迭代 / 丟棄</dt><dd>${rx.ldpc_iters ?? "—"} / ${rx.ldpc_drop ?? "—"}</dd>` +
+    `<dt>BCH 失敗 / BB CRC</dt><dd${bad(rx.bch_fail || rx.bb_crc)}>${rx.bch_fail ?? "—"} / ${rx.bb_crc ?? "—"}</dd>` +
+    `<dt>USB 溢位</dt><dd${bad(rx.host_overflow)}>${rx.host_overflow ?? "—"}</dd>` +
+    `<dt>本機 TX</dt><dd>${tx.freq ? (tx.freq / 1e6).toFixed(1) + " MHz" : "—"}，增益 ${tx.gain ?? "—"} dB，幀 ${tx.frames_sent ?? "—"}，dummy ${tx.dummy ?? "—"}</dd>` +
+    `<dt>TX USB 欠載</dt><dd${bad(tx.host_underflow)}>${tx.host_underflow ?? "—"}</dd>`;
+  $("dvbMeta").textContent = `FPGA ${m.fpga ? m.fpga.version : "—"} · ${m.config ? esc(m.config.modcod) + "（本機 TX）" : ""}`;
+}
 function renderModem(m, rm) {
-  if (m && m.rx) {
-    const rx = m.rx, tx = m.tx || {};
-    const chips = [];
-    chips.push(rx.lock ? `<span class="tag lock">LOCK</span>` : `<span class="tag unlock">未鎖定</span>`);
-    chips.push(`<span class="tag neutral">${rx.modcod === "DUMMY" ? "DUMMY（對方閒置幀）" : esc(rx.modcod || "—")}</span>`);
-    chips.push(`<span class="tag neutral">${rx.pilots ? "導頻 on" : "無導頻"}</span>`);
-    chips.push(`<span class="tag neutral">FLL ${rx.fll_stage ?? "—"}</span>`);
-    chips.push(`<span class="tag neutral">${rx.freq ? (rx.freq / 1e6).toFixed(1) + " MHz" : ""} · ${rx.rs ? (rx.rs / 1e6).toFixed(3) + " Msym/s" : ""} · 增益 ${rx.gain ?? "—"} dB</span>`);
-    $("dvbChips").innerHTML = chips.join("");
-    const esn0 = rx.esn0_db;
-    $("mEsn0").innerHTML = `${num(esn0)}<small>dB</small>`;
-    $("mEbn0").textContent = rx.ebn0_db != null ? `Eb/N0 ${num(rx.ebn0_db)} dB` : "M2M4 盲估計";
-    setMetric("mEsn0", esn0, esn0 == null ? "" : esn0 >= 10 ? "ok" : esn0 >= 7 ? "warn" : "crit");
-    // 解碼率：最近一個 PLHEADER 是 dummy 時本機算不出容量，改用 Jetson 心跳回報的下行容量
-    const cap = rx.capacity_bps > 0 ? rx.capacity_bps : (rm && rm.tx && rm.tx.capacity_bps) || 0;
-    const pct = cap > 0 ? Math.min(100, 100 * (rx.rate_bps || 0) / cap) : null;
-    $("mRate").innerHTML = `${pct == null ? "—" : pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}<small>%</small>`;
-    $("mRateS").textContent = cap > 0 ? `${((rx.rate_bps || 0) / 1e3).toFixed(0)} / ${(cap / 1e3).toFixed(0)} kbit/s，${num(rx.frames_per_s, 0)} 幀/秒` : "等待對方資料";
-    setMetric("mRate", pct, pct == null ? "" : "ok");
-    const cfo = rx.cfo_hz;
-    $("mCfo").innerHTML = cfo == null ? "—<small>kHz</small>" : Math.abs(cfo) >= 1000 ? `${(cfo / 1000).toFixed(2)}<small>kHz</small>` : `${cfo.toFixed(0)}<small>Hz</small>`;
-    $("mCfoS").textContent = cfo != null && rx.freq ? `${(cfo / rx.freq * 1e6).toFixed(2)} ppm` : "";
-    $("mLevel").innerHTML = `${num(rx.level_dbfs)}<small>dBFS</small>`;
-    $("mLevelS").textContent = rx.level_dbfs != null && rx.level_dbfs > -3 ? "接近飽和，請降 RX 增益" : rx.rssi_db != null ? `RSSI ${num(rx.rssi_db)} dB` : "";
-    const bad = (v) => v ? ' class="bad"' : "";
-    $("dvbKv").innerHTML =
-      `<dt>幀數 / 漏幀</dt><dd${bad(rx.misses)}>${rx.frames ?? "—"} / ${rx.misses ?? "—"}</dd>` +
-      `<dt>LDPC 迭代 / 丟棄</dt><dd>${rx.ldpc_iters ?? "—"} / ${rx.ldpc_drop ?? "—"}</dd>` +
-      `<dt>BCH 失敗 / BB CRC</dt><dd${bad(rx.bch_fail || rx.bb_crc)}>${rx.bch_fail ?? "—"} / ${rx.bb_crc ?? "—"}</dd>` +
-      `<dt>USB 溢位</dt><dd${bad(rx.host_overflow)}>${rx.host_overflow ?? "—"}</dd>` +
-      `<dt>本機 TX</dt><dd>${tx.freq ? (tx.freq / 1e6).toFixed(1) + " MHz" : "—"}，增益 ${tx.gain ?? "—"} dB，幀 ${tx.frames_sent ?? "—"}，dummy ${tx.dummy ?? "—"}</dd>` +
-      `<dt>TX USB 欠載</dt><dd${bad(tx.host_underflow)}>${tx.host_underflow ?? "—"}</dd>`;
-    $("dvbMeta").textContent = `FPGA ${m.fpga ? m.fpga.version : "—"} · ${m.config ? esc(m.config.modcod) + "（本機 TX）" : ""}`;
+  const l0 = S.link || {}, loc0 = l0.local || {}, remote0 = (l0.jetson || {}).link || {};
+  if (loc0.mode === "multi") {
+    renderMulti(loc0, remote0, m, rm);
+  } else if (m && m.rx) {
+    $("dvbPanel").classList.remove("net");
+    $("dvbTitle").textContent = "DVB-S2 接收（下行：Jetson → 地面站）";
+    $("dvbChips").innerHTML = dvbChips(m);
+    renderDvbBody(m, rm);
   } else {
-    renderNetLink((S.link || {}).local || {}, ((S.link || {}).jetson || {}).link || {});
+    renderNetLink(loc0, remote0);
   }
   // 上行（Jetson 端的接收）＋ TS 層
   const l = S.link || {};
@@ -699,6 +715,59 @@ function renderModem(m, rm) {
     $("upKv").innerHTML = `<dt>地面站收到訊息</dt><dd>${loc.messages ?? 0} 則，CRC 錯 ${loc.crc_errors ?? 0}，掉包 ${loc.cc_errors ?? 0}</dd>`;
   }
   $("upMeta").textContent = l.hb_age_s != null ? `心跳 ${l.hb_age_s} 秒前` : "";
+}
+
+/* multi 模式（OneWeb ＋ USRP 同時連線，資料走其中一條，可切換） */
+const LNAME = { tcp: "OneWeb", fpga: "USRP" };
+function linkChip(name, st, m) {
+  if (name === "tcp") {
+    if (!st) return `<span class="tag neutral">OneWeb：—</span>`;
+    return st.connected ? `<span class="tag lock">OneWeb 已連線${st.rtt_ms != null ? ` · RTT ${st.rtt_ms} ms` : ""}</span>`
+      : `<span class="tag unlock">OneWeb 未連線${st.state === "error" ? "（連不上）" : st.state === "running" ? "（等待 Jetson 連入）" : ""}</span>`;
+  }
+  if (name === "fpga") {
+    if (!st || st.state !== "running") return `<span class="tag unlock">USRP 未啟動${st && st.state === "error" ? "（找不到 USRP？）" : ""}</span>`;
+    const rx = m && m.rx;
+    if (!rx) return `<span class="tag neutral">USRP 數據機啟動中</span>`;
+    return rx.lock ? `<span class="tag lock">USRP LOCK ${esc(rx.modcod || "")} · Es/N0 ${num(rx.esn0_db)} dB</span>` : `<span class="tag unlock">USRP 未鎖定對方訊號</span>`;
+  }
+  return `<span class="tag neutral">${esc(name)}：${esc((st && st.state) || "—")}</span>`;
+}
+function renderMulti(loc, remote, m, rm) {
+  const panel = $("dvbPanel"), links = loc.links || {};
+  const hasDvb = !!(m && m.rx);
+  panel.classList.toggle("net", !hasDvb);
+  $("dvbTitle").textContent = "資料鏈路：OneWeb ／ USRP DVB-S2（可切換，一次只用一條）";
+  const active = loc.active, rActive = remote.active;
+  const sw = loc.switching || remote.switching;               // 任一端在交接
+  const pending = !!(S.select && S.select.state === "sending" && S.select.settings && S.select.settings.link) || !!sw;
+  const names = Object.keys(links).length ? Object.keys(links) : ["tcp", "fpga"];
+  const btns = names.map((n) => `<button type="button" class="${active === n ? "on" : ""}" data-link="${n}" ${pending ? "disabled" : ""}>${LNAME[n] || n}</button>`).join("");
+  const chips = [`<span class="tag neutral">資料走</span><span class="lnksw">${btns}</span>`];
+  if (sw) chips.push(`<span class="tag neutral">切換中 → ${LNAME[sw.to] || sw.to}（${Math.round(sw.age_s || 0)} 秒，新鏈路兩邊都通了才停舊的，最多 60 秒）</span>`);
+  else if (pending) chips.push(`<span class="tag neutral">等待 Jetson 確認…</span>`);
+  const ls = loc.last_switch;
+  if (ls && ls.result !== "ok" && Date.now() / 1000 - ls.ts < 180) chips.push(`<span class="tag unlock">切到 ${LNAME[ls.to] || ls.to} 失敗：新鏈路 60 秒內沒通，維持 ${LNAME[active] || active}</span>`);
+  if (rActive && active && rActive !== active && !sw) chips.push(`<span class="tag unlock">兩端不一致：Jetson 在 ${LNAME[rActive] || rActive}、地面站在 ${LNAME[active] || active}</span>`);
+  for (const n of names) {
+    const st = links[n] || {};
+    chips.push(st.running || st.state === "running" ? linkChip(n, st, m) : `<span class="tag neutral">${LNAME[n] || n} 未啟動（切換時才啟動）</span>`);
+  }
+  $("dvbChips").innerHTML = chips.join("");
+  for (const b of $("dvbChips").querySelectorAll(".lnksw button")) b.onclick = () => switchLink(b.dataset.link);
+  if (hasDvb) renderDvbBody(m, rm); else { $("dvbKv").innerHTML = ""; }
+  const t = links.tcp || {}, rl = remote.links || {}, rb = loc.rx_by || {};
+  $("dvbKv").innerHTML +=
+    `<dt>最近收到經由</dt><dd>${loc.last_rx ? (LNAME[loc.last_rx] || loc.last_rx) : "—"}（累計 OneWeb ${rb.tcp ?? 0} 則 / USRP ${rb.fpga ?? 0} 則）</dd>` +
+    (t.running ? `<dt>OneWeb</dt><dd>${t.connected ? `已連 ${esc(t.peer || "")}，RTT ${t.rtt_ms ?? "—"} ms，重傳 ${t.retrans ?? 0}，重連 ${t.restarts ?? 0}` : `未連線（${esc(t.state || "—")}）`}</dd>` : "") +
+    `<dt>Jetson 端</dt><dd>資料走 ${LNAME[rActive] || rActive || "—"}${remote.switching ? `，切換中 → ${LNAME[remote.switching.to] || remote.switching.to}` : ""}；OneWeb ${rl.tcp && rl.tcp.connected ? `已連，RTT ${rl.tcp.rtt_ms ?? "—"} ms` : rl.tcp && rl.tcp.running ? "未連上" : "未啟動"}；USRP ${rl.fpga && rl.fpga.ready ? "數據機運作中" : rl.fpga && rl.fpga.running ? "啟動中／不可用" : "未啟動"}</dd>`;
+  $("dvbMeta").textContent = `資料走 ${LNAME[active] || active || "—"}` + (hasDvb ? `　FPGA ${m.fpga ? m.fpga.version : "—"}` : "");
+}
+async function switchLink(name) {
+  try {
+    const r = await fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: { link: name } }) });
+    renderSelect(await r.json());
+  } catch (err) { $("selmsg").className = "selmsg failed"; $("selmsg").textContent = `沒有送出：${err.message}`; }
 }
 
 /* 網路模式（tcp：OneWeb／網際網路）：同一個面板改顯示連線狀態 */

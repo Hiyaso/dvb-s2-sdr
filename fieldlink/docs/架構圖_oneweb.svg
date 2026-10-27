@@ -11,7 +11,7 @@
     </marker>
   </defs>
   <rect width="1500" height="1030" fill="#ffffff"/>
-  <text x="750" y="38" text-anchor="middle" font-size="24" font-weight="700" fill="#111">場域災害偵測系統 架構圖（Nano 端 ／ PC 端）— OneWeb 衛星網路版（2026-10-27 實測）</text>
+  <text x="750" y="38" text-anchor="middle" font-size="24" font-weight="700" fill="#111">場域災害偵測系統 架構圖（Nano 端 ／ PC 端）— OneWeb 衛星網路 ／ USRP 可切換（2026-10-27 實測）</text>
 
   <!-- ===================== Nano side ===================== -->
   <rect x="30" y="60" width="620" height="870" rx="12" fill="#eef4ff" stroke="#1c64f2" stroke-width="2"/>
@@ -72,7 +72,7 @@
 
     <line x1="340" y1="498" x2="340" y2="520" stroke="#333" marker-end="url(#ar)"/>
     <rect x="68" y="522" width="544" height="30" rx="6" fill="#f5f8ff" stroke="#8aa8e8"/>
-    <text x="340" y="542" text-anchor="middle" font-weight="600">鏈路層 common/link.py（tcp 模式）：TCP client，主動連到地面站 123.193.37.73:6767</text>
+    <text x="340" y="542" text-anchor="middle" font-weight="600">鏈路層 common/link.py（multi：OneWeb／USRP 擇一）：預設 TCP 連 123.193.37.73:6767</text>
     <text x="340" y="582" text-anchor="middle" fill="#555" font-size="12">資源：Ollama 約 5 GB、程式＋TensorRT 約 0.7 GB，記憶體是主要限制；沒有數據機行程、不佔 USB</text>
   </g>
 
@@ -107,7 +107,7 @@
   <text x="1160" y="130" text-anchor="middle" font-weight="700">瀏覽器儀表板 http://localhost:8080（ground/static/index.html）</text>
   <g font-size="12.5" fill="#444">
     <text x="1160" y="150" text-anchor="middle">狀態橫幅 · 目前狀態 · 手機清單 · 即時縮圖 · 最近 30 分鐘時間軸 · 嚴重事件影像 · 辨識紀錄／CSV</text>
-    <text x="1160" y="168" text-anchor="middle">資料鏈路面板：OneWeb TCP 連線、RTT、重傳、收送量、重連、Jetson 端（fpga 模式：DVB-S2 接收面板）</text>
+    <text x="1160" y="168" text-anchor="middle">鏈路面板：OneWeb／USRP 切換鈕、連線狀態與 RTT；走 USRP 時顯示 DVB-S2 接收與頻譜</text>
   </g>
   <rect x="890" y="182" width="540" height="36" rx="6" fill="#ffeeda" stroke="#d9480f"/>
   <text x="1160" y="205" text-anchor="middle" font-weight="600" fill="#d9480f">操作：開始/停止偵測 · 選手機 · 縮圖/VLM 設定 · 清空 · 送通知 →（經網路，有 ACK 重送）</text>
@@ -134,7 +134,7 @@
     <text x="1160" y="466" text-anchor="middle" font-weight="600">WebSocket 推播給儀表板：報告、鏈路、縮圖（每秒 1–3 張）、選擇狀態</text>
     <text x="1160" y="484" text-anchor="middle" fill="#444">MPEG-TS 分段重組＋CRC32（common/ts.py），每條 TCP 連線各自一個解多工器</text>
     <rect x="888" y="504" width="544" height="30" rx="6" fill="#f3fbf5" stroke="#86c7a0"/>
-    <text x="1160" y="524" text-anchor="middle" font-weight="600">鏈路層 common/link.py（tcp 模式）：TCP server 監聽 0.0.0.0:6767，等 Nano 連入</text>
+    <text x="1160" y="524" text-anchor="middle" font-weight="600">鏈路層 common/link.py（multi：OneWeb／USRP 擇一）：TCP server 0.0.0.0:6767，按鈕切 USRP</text>
     <text x="1160" y="566" text-anchor="middle" fill="#555" font-size="12">tools/restart_ground.sh · stop_ground.sh · logs/ground_app.log（不再啟動數據機）</text>
     <text x="1160" y="586" text-anchor="middle" fill="#555" font-size="12">多台 Jetson：全部連同一個埠，各自一條 TCP 連線，依 node_id 區分；不需要多台 USRP</text>
   </g>
@@ -160,7 +160,7 @@
   <text x="1312" y="852" text-anchor="middle" fill="#444" font-size="12.5">同一條 TCP 連線回送，不需連入 Nano</text>
   <line x1="1007" y1="786" x2="1007" y2="810" stroke="#333"/>
   <line x1="1312" y1="786" x2="1312" y2="810" stroke="#333"/>
-  <text x="1160" y="905" text-anchor="middle" fill="#555" font-size="12.5">備用鏈路：兩邊 link.mode 改 fpga 即回到 USRP B210 的 DVB-S2 無線鏈路（見 架構圖.svg）</text>
+  <text x="1160" y="905" text-anchor="middle" fill="#555" font-size="12.5">切換：按 USRP → 兩邊啟動 dvbs2_b210，通了才停 OneWeb（實測 3–8 秒）；USRP 鏈路細節見 架構圖.svg</text>
 
   <!-- ===================== network link between the panels ===================== -->
   <rect x="650" y="600" width="200" height="190" rx="8" fill="#fffbe6" stroke="#d9480f" stroke-dasharray="4 3"/>
@@ -172,7 +172,7 @@
   <text x="750" y="724" text-anchor="middle" font-size="12" fill="#444">可靠傳輸：不丟包、不節流</text>
   <text x="750" y="740" text-anchor="middle" font-size="12" fill="#444">往返延遲實測約 0.3 秒（20 跳）</text>
   <text x="750" y="764" text-anchor="middle" font-size="12" fill="#444">心跳每 2 秒維持 NAT 映射</text>
-  <text x="750" y="780" text-anchor="middle" font-size="12" fill="#444">斷線 3 秒內自動重連</text>
+  <text x="750" y="780" text-anchor="middle" font-size="12" fill="#444">斷線 3 秒內自動重連 · 可一鍵切到 USRP</text>
   <line x1="652" y1="822" x2="846" y2="822" stroke="#d9480f" stroke-width="3" marker-end="url(#arO)"/>
   <text x="750" y="812" text-anchor="middle" font-size="12.5" fill="#d9480f" font-weight="600">Nano 發起連線、送資料 →</text>
   <line x1="848" y1="856" x2="654" y2="856" stroke="#1c64f2" stroke-width="3" marker-end="url(#arB)"/>

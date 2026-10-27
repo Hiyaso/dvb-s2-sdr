@@ -18,6 +18,13 @@ mode = "tcp"      走網際網路（OneWeb 衛星網路、4G、有線）：TS �
     斷線由 TCP keepalive / TCP_USER_TIMEOUT（timeout_s）偵測，supervisor 每 3 秒重連。
     server 可同時接多個 Nano（各自一個解多工器），送出的訊息會廣播給全部，Nano 依訊息裡的 node 過濾。
 
+mode = "multi"    可切換的鏈路（links，例如 [tcp, fpga]）：平常只跑 active 那一條；切換時（儀表板按鈕 → SELECT
+    settings.link，有 ACK）先把新鏈路帶起來、兩邊都在新鏈路上收到對方的訊息後才把舊的停掉（make-before-break，
+    交接只有幾秒），新鏈路 60 秒內沒通就放棄、維持原來那條。心跳、指令、ACK 用 via="all" 走所有「正在跑」的鏈路，
+    所以交接期間兩條都送；每條子鏈路各自一個 Link（supervisor、佇列、解多工器），重複收到的由應用層去重。
+    Nano 端 auto_commit=True：新鏈路上一收到地面站的訊息就確定切換；地面站則在新鏈路收到心跳後送一個確認 SELECT，
+    收到它的 ACK 才停舊鏈路。
+
 mode = "fpga"     實際走 USRP，但數據機在 FPGA 裡（dvb-s2-sdr 專案的 dvbs2_b210 程式 + 自製 B210 image）：
     app ──UDP 127.0.0.1:udp_in──▶ dvbs2_b210 --mode trx --udp-in/--udp-out ──▶ USRP TX
     app ◀──UDP 127.0.0.1:udp_out── dvbs2_b210                               ◀── USRP RX
@@ -29,6 +36,7 @@ USRP 會 underflow、對方接收端失鎖。送出執行緒在佇列空的時�
 寫入 pipe 會阻塞，因此速率自然被 USRP 的取樣率節流。
 """
 import fcntl
+import functools
 import itertools
 import logging
 import os
@@ -548,7 +556,18 @@ class Link:
                        "rx_bytes": 0, "restarts": 0, "dropped": 0}
 
     # ---- public ---------------------------------------------------------
+    @property
+    def running(self) -> bool:
+        return self._running
+
     def start(self):
+        if self._running:
+            return
+        while not self._q.empty():          # 停掉期間排隊的舊訊息（縮圖、心跳）不要在重新啟動時一次倒出去
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
         self._running = True
         threading.Thread(target=self._supervise, name="link-supervisor", daemon=True).start()
 
@@ -557,8 +576,8 @@ class Link:
         if self._session:
             self._session.close()
 
-    def send(self, msg_type: int, payload: bytes, priority: int = 0):
-        """priority 0 = 重要（報告、通知），1 = 可丟棄（心跳）。回傳 msg_id。"""
+    def send(self, msg_type: int, payload: bytes, priority: int = 0, via: str = "active"):
+        """priority 0 = 重要（報告、通知），1 = 可丟棄（心跳）。回傳 msg_id。via 只在 multi 模式有意義。"""
         if priority > 0 and self._q.qsize() > 32:
             self._stats["dropped"] += 1
             return None
@@ -570,6 +589,24 @@ class Link:
     def reliable(self) -> bool:
         """TCP 等可靠傳輸：應用層不必為了掉包重送。"""
         return self.mode == "tcp"
+
+    @property
+    def active(self) -> str:
+        return self.mode
+
+    def set_active(self, name: str) -> bool:
+        return False            # 單一鏈路不能切換
+
+    def ready(self) -> bool:
+        """這條鏈路現在能不能送資料：tcp 要連上；fpga 要數據機行程活著且 3 秒內有狀態；其他只要在跑。"""
+        sess = self._session
+        if sess is None or self._stats["state"] != "running" or not sess.alive():
+            return False
+        if self.mode == "tcp":
+            return bool(sess.info().get("connected"))
+        if self.mode == "fpga":
+            return bool(sess.status) and time.time() - sess.status_time < 3
+        return True
 
     def stats(self) -> dict:
         s = dict(self._stats)
@@ -617,17 +654,27 @@ class Link:
             return _Dvbs2Session(self.cfg, self.log_dir, self.mode == "loopback", self.log)
         raise ValueError(f"未知的 link.mode: {self.mode}（可用 tcp / fpga / udp / dvbs2 / loopback）")
 
+    def _sleep(self, secs: float):
+        end = time.time() + secs
+        while self._running and time.time() < end:
+            time.sleep(0.5)
+
     def _supervise(self):
+        fails = 0           # 連續「啟動失敗」或「啟動後 10 秒內就結束」的次數：放慢重試、少印 log（例如 USRP 沒接）
         while self._running:
             try:
                 session = self._open()
             except Exception as e:
-                self.log.error("鏈路啟動失敗：%s（5 秒後重試）", e)
+                fails += 1
+                delay = 5 if fails <= 6 else 15 if fails <= 20 else 30
+                if fails <= 3 or fails % 12 == 0:
+                    self.log.error("鏈路啟動失敗：%s（%d 秒後重試%s）", e, delay, f"，已連續失敗 {fails} 次" if fails > 1 else "")
                 self._stats["state"] = "error"
-                time.sleep(5)
+                self._sleep(delay)
                 continue
             self._session = session
             self._stats["state"] = "running"
+            t_start = time.time()
             threads = [threading.Thread(target=self._tx_loop, args=(session,), daemon=True),
                        threading.Thread(target=self._rx_loop, args=(session,), daemon=True)]
             for t in threads:
@@ -641,11 +688,16 @@ class Link:
             if self._running:
                 self._stats["restarts"] += 1
                 self._stats["state"] = "restarting"
-                if self.mode == "tcp":
-                    self.log.warning("TCP 鏈路中斷，3 秒後重新連線")
-                else:
-                    self.log.warning("鏈路子行程結束，3 秒後重新啟動（請看 %s/*.log）", self.log_dir)
-                time.sleep(3)
+                quick = time.time() - t_start < 10
+                fails = fails + 1 if quick else 0
+                delay = 3 if fails <= 3 else 15 if fails <= 20 else 30
+                if fails <= 3 or fails % 12 == 0:
+                    if self.mode == "tcp":
+                        self.log.warning("TCP 鏈路中斷，%d 秒後重新連線", delay)
+                    else:
+                        self.log.warning("鏈路子行程結束，%d 秒後重新啟動（請看 %s/*.log%s）", delay, self.log_dir,
+                                         f"；已連續 {fails} 次很快結束" if fails > 1 else "")
+                self._sleep(delay)
         self._stats["state"] = "stopped"
 
     def _tx_loop(self, session):
@@ -695,3 +747,156 @@ class Link:
                 demux = self._demux
             self._stats["rx_bytes"] += len(data)
             demux.feed(data)
+
+
+class MultiLink:
+    """mode=multi：多條 Link 擇一使用、可切換。平常只有 active 在跑；begin_switch() 先啟動新鏈路，
+    commit_switch() 把 active 換過去並停掉舊的，超過 SWITCH_TIMEOUT 沒確認就 abort_switch()。"""
+    mode = "multi"
+    SWITCH_TIMEOUT = 60.0
+
+    def __init__(self, cfg: dict, name: str, on_message, base_dir: Path = Path("."), auto_commit: bool = False):
+        self.cfg = cfg
+        self.names = [str(n) for n in (cfg.get("links") or ["tcp", "fpga"])]
+        self.active = str(cfg.get("active") or self.names[0])
+        if self.active not in self.names:
+            raise ValueError(f"link.active={self.active!r} 不在 link.links={self.names}")
+        self.auto_commit = auto_commit      # True（Nano）：新鏈路一收到對方訊息就確定切換
+        self.log = logging.getLogger(f"link.{name}")
+        self.on_message = on_message
+        self.links = {}
+        for n in self.names:
+            sub = dict(cfg)
+            sub["mode"] = n
+            self.links[n] = Link(sub, f"{name}.{n}", functools.partial(self._on, n), base_dir=base_dir)
+        self.switching = None               # {"to": name, "since": t}
+        self.last_switch = None             # {"to": name, "result": "ok" | "timeout", "ts": t}
+        self.last_rx = None
+        self.rx_on = {n: 0.0 for n in self.names}
+        self.rx_by = {n: 0 for n in self.names}
+        self.tx_by = {n: 0 for n in self.names}
+        self._lock = threading.Lock()
+        self._alive = True
+        threading.Thread(target=self._watch, name="link-switch-watch", daemon=True).start()
+
+    def _on(self, name, mtype, mid, payload):
+        self.rx_on[name] = time.time()
+        self.last_rx = name
+        self.rx_by[name] += 1
+        sw = self.switching
+        if sw and name == sw["to"] and self.auto_commit:
+            self.commit_switch()            # Nano：地面站已經在新鏈路上說話了 → 確定切換
+        self.on_message(mtype, mid, payload)
+
+    def _watch(self):
+        while self._alive:
+            sw = self.switching
+            if sw and time.time() - sw["since"] > self.SWITCH_TIMEOUT:
+                self.abort_switch("timeout")
+            time.sleep(1)
+
+    # ---- public（和 Link 相同的介面）----
+    def start(self):
+        self.links[self.active].start()
+
+    def stop(self):
+        self._alive = False
+        for l in self.links.values():
+            l.stop()
+
+    def begin_switch(self, name: str) -> bool:
+        """啟動新鏈路、進入交接；舊的先留著。name 不存在、已是 active、或正在切換 → False。"""
+        name = str(name)
+        with self._lock:
+            if name not in self.links or name == self.active or self.switching:
+                return False
+            self.switching = {"to": name, "since": time.time()}
+        self.log.info("開始切換資料鏈路 %s → %s（新鏈路兩邊都通了才停舊的，最多等 %d 秒）", self.active, name, int(self.SWITCH_TIMEOUT))
+        self.links[name].start()
+        return True
+
+    def commit_switch(self):
+        with self._lock:
+            sw = self.switching
+            if not sw:
+                return
+            old, self.active, self.switching = self.active, sw["to"], None
+        self.last_switch = {"to": self.active, "result": "ok", "ts": time.time()}
+        self.log.info("資料鏈路已切換到 %s，停止 %s", self.active, old)
+        self.links[old].stop()
+
+    def abort_switch(self, why: str = "timeout"):
+        with self._lock:
+            sw = self.switching
+            if not sw:
+                return
+            self.switching = None
+        self.last_switch = {"to": sw["to"], "result": why, "ts": time.time()}
+        self.log.warning("切換到 %s 失敗（%s），維持 %s", sw["to"], why, self.active)
+        self.links[sw["to"]].stop()
+
+    def set_active(self, name: str) -> bool:
+        """立刻硬切（不交接）：停舊的、啟動新的。正常切換請用 begin_switch()。"""
+        name = str(name)
+        if name not in self.links:
+            return False
+        if name == self.active:
+            return True
+        old, self.active = self.active, name
+        self.log.info("資料鏈路硬切 %s → %s", old, name)
+        self.links[old].stop()
+        self.links[name].start()
+        return True
+
+    @property
+    def reliable(self) -> bool:
+        return self.links[self.active].reliable
+
+    def ready(self) -> bool:
+        return self.links[self.active].ready()
+
+    def send(self, msg_type: int, payload: bytes, priority: int = 0, via: str = "active"):
+        """via="active"：資料走目前的鏈路；"all"：所有正在跑的鏈路（交接期間兩條）；或指定鏈路名稱。"""
+        if via == "all":
+            targets = [n for n in self.names if self.links[n].running] or [self.active]
+        elif via in self.links:
+            targets = [via]
+        else:
+            targets = [self.active]
+        mid = None
+        for n in targets:
+            r = self.links[n].send(msg_type, payload, priority)
+            if r is not None:
+                self.tx_by[n] += 1
+                mid = r if mid is None else mid
+        return mid
+
+    def stats(self) -> dict:
+        subs = {n: l.stats() for n, l in self.links.items()}
+        for n, st in subs.items():
+            st["ready"] = self.links[n].ready()
+            st["running"] = self.links[n].running
+        sw = self.switching
+        agg = {"mode": "multi", "active": self.active,
+               "switching": dict(sw, age_s=round(time.time() - sw["since"], 1)) if sw else None,
+               "last_switch": self.last_switch,
+               "last_rx": self.last_rx, "rx_by": dict(self.rx_by), "tx_by": dict(self.tx_by),
+               "state": subs[self.active]["state"], "links": subs}
+        for k in ("messages", "crc_errors", "cc_errors", "restarts", "dropped", "queue", "rx_bytes", "tx_bytes", "tx_messages"):
+            agg[k] = sum(int(st.get(k, 0) or 0) for st in subs.values())
+        return agg
+
+    def modem(self) -> dict | None:
+        l = self.links.get("fpga")
+        return l.modem() if l else None
+
+    def spectrum(self) -> dict | None:
+        l = self.links.get("fpga")
+        return l.spectrum() if l else None
+
+
+def make_link(cfg: dict, name: str, on_message, base_dir: Path = Path("."), **multi_kw):
+    """依 cfg["mode"] 建立 Link 或 MultiLink（兩者介面相同）；multi_kw 只給 MultiLink（auto_commit）。"""
+    if cfg.get("mode") == "multi":
+        return MultiLink(cfg, name, on_message, base_dir, **multi_kw)
+    return Link(cfg, name, on_message, base_dir)

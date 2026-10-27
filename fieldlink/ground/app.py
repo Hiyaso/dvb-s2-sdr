@@ -21,7 +21,7 @@ from aiohttp import WSMsgType, web
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from common.link import Link  # noqa: E402
+from common.link import make_link  # noqa: E402
 from common.protocol import MsgType, now_iso, pack_json, unpack_json, unpack_report, unpack_thumb  # noqa: E402
 from ground.storage import Storage  # noqa: E402
 
@@ -34,7 +34,7 @@ class GroundStation:
         self.cfg = cfg
         s = cfg["storage"]
         self.db = Storage(ROOT / s["db"], ROOT / s["images"])
-        self.link = Link(cfg["link"], "ground", self._on_link_thread, base_dir=ROOT)
+        self.link = make_link(cfg["link"], "ground", self._on_link_thread, base_dir=ROOT)
         self.boot = secrets.token_hex(4)      # Jetson 用 (boot, id) 對 SELECT / NOTIFY 去重
         self.clients = set()
         self.loop = None
@@ -114,6 +114,15 @@ class GroundStation:
                     self.settings = ack.get("settings") or self.settings
                     self.pending_select = None
                     log.info("Jetson 已套用選擇：%s", self.selected or "無")
+                    target = (p.get("settings") or {}).get("link")
+                    if target and self.link.mode == "multi":
+                        if p.get("confirm"):
+                            self.link.commit_switch()        # Nano 在新鏈路上回了 ACK → 兩邊都通，停掉舊鏈路
+                            ev = self.db.event("link_switch", f"資料鏈路切換到 {target}")
+                            self._emit({"type": "link_event", "event": ev})
+                            log.info("資料鏈路切換完成：%s", target)
+                        elif target != self.link.active and self.link.begin_switch(target):
+                            log.info("Nano 接受切換到 %s，本機啟動新鏈路，等它通", target)
                     self._emit({"type": "select", "select": self.select_status()})
         except Exception:
             log.exception("處理訊息失敗 type=%s", mtype)
@@ -173,7 +182,7 @@ class GroundStation:
                     self.pending.pop(nid)
                     self._emit({"type": "notify", "notify": self.db.update_notification(nid, state="failed")})
                     continue
-                self.link.send(MsgType.NOTIFY, p["payload"], priority=0)
+                self.link.send(MsgType.NOTIFY, p["payload"], priority=0, via="all")
                 p["tries"] += 1
                 p["next"] = now + retry_s
                 self._emit({"type": "notify", "notify": self.db.update_notification(nid, tries=p["tries"])})
@@ -185,10 +194,21 @@ class GroundStation:
                     self._emit({"type": "select", "select": {"state": "failed", "phone": p["phone"],
                                                               "tries": p["tries"], "selected": self.selected}})
                 else:
-                    self.link.send(MsgType.SELECT, p["payload"], priority=0)
+                    self.link.send(MsgType.SELECT, p["payload"], priority=0, via=p.get("via", "all"))
                     p["tries"] += 1
                     p["next"] = now + sel_retry
                     self._emit({"type": "select", "select": self.select_status()})
+            # 鏈路交接：新鏈路收到 Nano 的心跳後，經新鏈路送一個確認 SELECT；它的 ACK 回來才停舊鏈路（見 _on_link）
+            sw = getattr(self.link, "switching", None)
+            if sw and not self.pending_select and not sw.get("confirm_sent") and self.link.rx_on.get(sw["to"], 0) > sw["since"]:
+                sw["confirm_sent"] = True
+                sid = next(self.sel_seq)
+                msg = {"id": sid, "boot": self.boot, "ts": now_iso(), "settings": {"link": sw["to"]}}
+                self.pending_select = {"id": sid, "phone": self.selected, "settings": msg["settings"], "tries": 0, "next": 0.0,
+                                       "state": "sending", "payload": pack_json(msg), "via": sw["to"], "confirm": True}
+                log.info("新鏈路 %s 已收到 Nano 心跳，經它送確認 SELECT #%d", sw["to"], sid)
+            elif not sw and self.pending_select and self.pending_select.get("confirm"):
+                self.pending_select = None           # 交接已放棄（timeout），確認訊息不必再送
             self._emit({"type": "link", "link": self.link_status(), "select": self.select_status()})
             sp = self.link.spectrum()
             if sp and sp.get("db"):
@@ -249,6 +269,10 @@ class GroundStation:
         settings = body.get("settings")
         if isinstance(settings, dict) and settings:
             msg["settings"] = {k: settings[k] for k in ("detect", "thumb_fps", "thumb_max_side", "vlm_max_side") if k in settings}
+            if settings.get("link") in ("tcp", "fpga") and self.link.mode == "multi":
+                if getattr(self.link, "switching", None):
+                    return web.json_response({"error": "正在切換鏈路，請等它完成"}, status=409)
+                msg["settings"]["link"] = settings["link"]   # 切換資料鏈路：Nano ACK 後本機啟動新鏈路，新鏈路通了再停舊的
         if "phone" not in msg and not msg.get("settings"):
             return web.json_response({"error": "沒有要改的東西"}, status=400)
         sid = next(self.sel_seq)

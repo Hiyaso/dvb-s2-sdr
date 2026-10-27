@@ -149,8 +149,11 @@ function showState(s) {
     : s.yolo_state === "disabled" ? YS.disabled : esc(s.yolo_model || "YOLO") + (YS[s.yolo_state] || "");
   $("vlm").innerHTML = esc(s.vlm_model) + (s.vlm_busy ? "，推論中" : "") + (s.last_error ? `<br><span class="bad">${esc(s.last_error)}</span>` : "");
   const l = s.link || {};
-  $("link").innerHTML = (l.state === "running" ? "" : '<span class="bad">') + (LINK[l.state] || l.state || "—") +
-    (l.state === "running" ? "" : "</span>") + `，收到 ${l.messages ?? 0} 則，CRC 錯誤 ${l.crc_errors ?? 0}`;
+  const tcp = l.transport === "tcp";
+  const tcpTxt = !tcp ? "" : l.connected ? `OneWeb／網路 TCP 已連上 ${esc(l.peer || "")}${l.rtt_ms != null ? `，RTT ${l.rtt_ms} ms` : ""}` :
+    `<span class="bad">網路 TCP 未連上 ${esc(l.peer || "")}（重試中）</span>`;
+  $("link").innerHTML = (tcp ? tcpTxt : (l.state === "running" ? "" : '<span class="bad">') + (LINK[l.state] || l.state || "—") +
+    (l.state === "running" ? "" : "</span>")) + `，收到 ${l.messages ?? 0} 則，CRC 錯誤 ${l.crc_errors ?? 0}`;
   $("sent").textContent = `${s.reports} 筆報告、${s.thumbs ?? 0} 張縮圖` + (s.skipped ? `，因推論太慢略過 ${s.skipped} 次` : "");
   const st = s.settings || {};
   $("detect").innerHTML = st.detect == null ? "—" : (Number(st.detect) === 1 ? "進行中（YOLO＋VLM）" : '<span class="bad">已停止</span>，等地面站按「開始偵測」') +

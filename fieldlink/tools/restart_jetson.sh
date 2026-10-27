@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在 Jetson 上重啟現場節點程式（fpga 模式）：停掉舊的實例與數據機，再用 nohup 啟動新的
+# 在 Jetson 上重啟現場節點程式：停掉舊的實例（fpga 模式時連數據機一起停），再用 nohup 啟動新的
 #   ./tools/restart_jetson.sh            log 在 logs/jetson_app.log
 cd "$(dirname "$0")/.."
 pkill -TERM -f "python jetson/app[.]py" 2>/dev/null; sleep 4

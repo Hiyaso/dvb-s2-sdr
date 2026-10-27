@@ -140,6 +140,8 @@ select[disabled] { opacity: .6; }
 .thumb-empty { aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--line2); border-radius: 6px; color: var(--muted); font-size: 13px; }
 
 /* DVB-S2 */
+#dvbPanel.net .right, #dvbPanel.net .metrics { display: none; }
+#dvbPanel.net .body.dvb { grid-template-columns: 1fr; }
 .dvb { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; }
 @media (max-width: 1000px) { .dvb { grid-template-columns: 1fr; } }
 .dvb .left .metrics { grid-template-columns: 1fr 1fr; }
@@ -270,8 +272,8 @@ tr.new td { animation: rowin 1.2s ease-out; }
     </div>
   </section>
 
-  <section class="panel c8">
-    <header><h2>DVB-S2 接收（下行：Jetson → 地面站）</h2><div class="meta" id="dvbMeta">等待數據機狀態</div></header>
+  <section class="panel c8" id="dvbPanel">
+    <header><h2 id="dvbTitle">DVB-S2 接收（下行：Jetson → 地面站）</h2><div class="meta" id="dvbMeta">等待數據機狀態</div></header>
     <div class="body dvb">
       <div class="left">
         <div class="chips" id="dvbChips"><span class="tag neutral">—</span></div>
@@ -674,7 +676,7 @@ function renderModem(m, rm) {
       `<dt>TX USB 欠載</dt><dd${bad(tx.host_underflow)}>${tx.host_underflow ?? "—"}</dd>`;
     $("dvbMeta").textContent = `FPGA ${m.fpga ? m.fpga.version : "—"} · ${m.config ? esc(m.config.modcod) + "（本機 TX）" : ""}`;
   } else {
-    $("dvbChips").innerHTML = `<span class="tag neutral">數據機沒有狀態（鏈路模式不是 fpga 或程式未啟動）</span>`;
+    renderNetLink((S.link || {}).local || {}, ((S.link || {}).jetson || {}).link || {});
   }
   // 上行（Jetson 端的接收）＋ TS 層
   const l = S.link || {};
@@ -697,6 +699,34 @@ function renderModem(m, rm) {
     $("upKv").innerHTML = `<dt>地面站收到訊息</dt><dd>${loc.messages ?? 0} 則，CRC 錯 ${loc.crc_errors ?? 0}，掉包 ${loc.cc_errors ?? 0}</dd>`;
   }
   $("upMeta").textContent = l.hb_age_s != null ? `心跳 ${l.hb_age_s} 秒前` : "";
+}
+
+/* 網路模式（tcp：OneWeb／網際網路）：同一個面板改顯示連線狀態 */
+function renderNetLink(loc, remote) {
+  const panel = $("dvbPanel");
+  if (loc.transport !== "tcp") {
+    panel.classList.remove("net");
+    $("dvbTitle").textContent = "DVB-S2 接收（下行：Jetson → 地面站）";
+    $("dvbChips").innerHTML = `<span class="tag neutral">數據機沒有狀態（鏈路模式不是 fpga 或程式未啟動）</span>`;
+    return;
+  }
+  panel.classList.add("net");
+  $("dvbTitle").textContent = "資料鏈路：OneWeb 衛星網路（TCP）";
+  const since = loc.since ? Math.max(0, Math.round(Date.now() / 1000 - loc.since)) : null;
+  const dur = since == null ? "" : since < 60 ? `${since} 秒` : since < 3600 ? `${Math.floor(since / 60)} 分` : `${(since / 3600).toFixed(1)} 小時`;
+  const chips = [];
+  chips.push(loc.connected ? `<span class="tag lock">已連線</span>` : `<span class="tag unlock">等待 Jetson 連入</span>`);
+  chips.push(`<span class="tag neutral">${loc.role === "server" ? "地面站 server" : "client"} · ${loc.clients ?? 0} 台 Jetson</span>`);
+  if (loc.rtt_ms != null) chips.push(`<span class="tag ${loc.rtt_ms > 1500 ? "unlock" : "neutral"}">RTT ${loc.rtt_ms} ms</span>`);
+  $("dvbChips").innerHTML = chips.join("");
+  const bad = (v) => v ? ' class="bad"' : "";
+  $("dvbKv").innerHTML =
+    `<dt>對方位址</dt><dd>${esc(loc.peer || "—")}${dur ? `，連線 ${dur}` : ""}</dd>` +
+    `<dt>TCP 重傳</dt><dd${bad(loc.retrans)}>${loc.retrans ?? "—"}（OneWeb 偶爾掉包會重傳，持續增加表示鏈路差）</dd>` +
+    `<dt>收到 / 送出</dt><dd>${((loc.rx_bytes || 0) / 1024).toFixed(0)} kB / ${((loc.tx_bytes || 0) / 1024).toFixed(0)} kB，${loc.messages ?? 0} 則</dd>` +
+    `<dt>重新連線</dt><dd${bad(loc.restarts)}>${loc.restarts ?? 0} 次</dd>` +
+    `<dt>Jetson 端</dt><dd>${remote.connected ? `已連上 ${esc(remote.peer || "")}` : "—"}${remote.rtt_ms != null ? `，RTT ${remote.rtt_ms} ms` : ""}${remote.restarts ? `，重連 ${remote.restarts} 次` : ""}</dd>`;
+  $("dvbMeta").textContent = loc.state === "running" ? "TCP 鏈路執行中（無射頻數據機）" : `鏈路 ${loc.state || "—"}`;
 }
 
 /* ---------- 頻譜與瀑布圖 ---------- */

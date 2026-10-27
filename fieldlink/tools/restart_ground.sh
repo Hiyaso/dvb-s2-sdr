@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在地面站電腦上重啟地面站程式：停掉舊的實例與數據機，再用 nohup 啟動新的
+# 在地面站電腦上重啟地面站程式：停掉舊的實例（fpga 模式時連數據機一起停），再用 nohup 啟動新的
 #   ./tools/restart_ground.sh            log 在 logs/ground_app.log，儀表板 http://localhost:8080
 cd "$(dirname "$0")/.."
 pkill -TERM -f "python ground/app[.]py" 2>/dev/null; sleep 4

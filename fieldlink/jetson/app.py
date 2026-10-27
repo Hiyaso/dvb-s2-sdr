@@ -204,7 +204,8 @@ class JetsonNode:
             meta_local = meta
 
         payload = pack_report(meta, img)
-        repeat = int(c.get("critical_repeat", 1)) if status == "critical" else 1
+        # 單向 DVB-S2 鏈路靠重送提高送達率；TCP（OneWeb）本身可靠就不重送
+        repeat = int(c.get("critical_repeat", 1)) if status == "critical" and not self.link.reliable else 1
         for _ in range(max(1, repeat)):
             self.link.send(MsgType.REPORT, payload, priority=0)
         self.reports_sent += 1
@@ -357,7 +358,8 @@ class JetsonNode:
                 "last_error": self.last_error, "reports": self.reports_sent, "skipped": self.skipped,
                 "thumbs": self.thumbs_sent, "modem": self.modem_brief(),
                 "link": {k: v for k, v in self.link.stats().items()
-                         if k in ("state", "messages", "crc_errors", "cc_errors", "restarts", "queue")}}
+                         if k in ("mode", "state", "messages", "crc_errors", "cc_errors", "restarts", "queue",
+                                  "transport", "connected", "peer", "since", "rtt_ms", "retrans")}}
 
     async def _heartbeat_loop(self):
         period = float(self.cfg.get("heartbeat_s", 2))
@@ -471,7 +473,7 @@ def build_app(node: JetsonNode) -> web.Application:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default=str(ROOT / "config" / "jetson.yaml"))
-    p.add_argument("--link-mode", help="覆寫 link.mode（fpga / udp / dvbs2 / loopback）")
+    p.add_argument("--link-mode", help="覆寫 link.mode（tcp / fpga / udp / dvbs2 / loopback）")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,

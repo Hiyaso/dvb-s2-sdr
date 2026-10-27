@@ -85,7 +85,7 @@ notify:
 heartbeat_s: 2
 
 link:
-  mode: fpga              # fpga | udp | dvbs2 | loopback
+  mode: tcp               # tcp（OneWeb／網際網路）| fpga（USRP DVB-S2）| udp | dvbs2 | loopback
   pid: 0x100
   log_dir: logs
   fpga:                   # FPGA 數據機（dvb-s2-sdr 專案的 dvbs2_b210 + 自製 B210 image），一個行程同時收發
@@ -103,6 +103,11 @@ link:
     udp_in: 5000          # 本機 UDP：app → dvbs2_b210
     udp_out: 6000         # 本機 UDP：dvbs2_b210 → app
     rate_kbps: 2200       # 送出節流，略低於 MODCOD 容量的 90 %
+  tcp:                    # mode=tcp：Nano 經 OneWeb 主動連到地面站（OneWeb 終端在 NAT 後面，只能由 Nano 發起）
+    role: client
+    connect: 123.193.37.73:6767    # 地面站電腦的對外位址（路由器把 TCP 6767 轉發到地面站電腦）；改用 Tailscale 時填地面站的 100.x.x.x
+    connect_timeout_s: 10
+    timeout_s: 20         # 送出 20 秒沒 ACK 視為斷線，3 秒後重連（TCP_USER_TIMEOUT）
   udp:                    # mode=udp 時使用（不經射頻的開發模式）
     listen: 0.0.0.0:47001
     peer: 192.168.1.100:47000

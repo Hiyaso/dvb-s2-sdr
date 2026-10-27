@@ -20,7 +20,7 @@ select:                     # 選手機（SELECT）沒收到 ACK 的重送
   max_tries: 10
 
 link:
-  mode: fpga                # fpga | udp | dvbs2 | loopback
+  mode: tcp                 # tcp（OneWeb／網際網路）| fpga（USRP DVB-S2）| udp | dvbs2 | loopback
   pid: 0x100
   log_dir: logs
   fpga:                     # FPGA 數據機（dvb-s2-sdr 專案的 dvbs2_b210 + 自製 B210 image）
@@ -37,6 +37,10 @@ link:
     udp_in: 5000
     udp_out: 6000
     rate_kbps: 1100
+  tcp:                      # mode=tcp：地面站當 server，Nano 從 OneWeb 連進來（可多台）
+    role: server
+    listen: 0.0.0.0:6767    # 路由器已把 TCP 6767 轉發到這台（對外 123.193.37.73:6767）；防火牆：sudo ufw allow 6767/tcp
+    timeout_s: 20
   udp:
     listen: 0.0.0.0:47000
     peer: 10.42.0.1:47001   # Jetson 的 IP

@@ -10,6 +10,14 @@ mode = "loopback" 本機自我測試：dvbs2-tx 的 IQ 直接接到 dvbs2-rx（�
 
 mode = "udp"      開發用：TS 封包直接走 UDP，不經過射頻，方便先把應用層調通。
 
+mode = "tcp"      走網際網路（OneWeb 衛星網路、4G、有線）：TS 位元流直接走一條 TCP 連線，
+    app ──TS──▶ TCP ──（OneWeb 終端 NAT / 網際網路）──▶ 地面站 TCP server ──TS──▶ app
+    OneWeb 使用者終端在 CGNAT 後面、沒有可被連入的位址，所以由 Nano（role=client）主動連到地面站
+    （role=server，位址要能被連到：Tailscale 的 100.x.x.x、或路由器轉發到電腦的公網 IP）。
+    TCP 本身可靠且有流量控制，不塞 null packet、不節流、嚴重事件不重送；
+    斷線由 TCP keepalive / TCP_USER_TIMEOUT（timeout_s）偵測，supervisor 每 3 秒重連。
+    server 可同時接多個 Nano（各自一個解多工器），送出的訊息會廣播給全部，Nano 依訊息裡的 node 過濾。
+
 mode = "fpga"     實際走 USRP，但數據機在 FPGA 裡（dvb-s2-sdr 專案的 dvbs2_b210 程式 + 自製 B210 image）：
     app ──UDP 127.0.0.1:udp_in──▶ dvbs2_b210 --mode trx --udp-in/--udp-out ──▶ USRP TX
     app ◀──UDP 127.0.0.1:udp_out── dvbs2_b210                               ◀── USRP RX
@@ -29,6 +37,7 @@ import json
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -104,6 +113,176 @@ class _UdpSession:
 
     def cleanup(self):
         self.sock.close()
+
+
+TCP_CHUNK = 64 * 1024
+
+
+def _tcp_tune(sock: socket.socket, user_timeout_ms: int):
+    """keepalive（閒置 10 s 後每 5 s 探測，3 次失敗斷線）＋ 送出資料 user_timeout 沒 ACK 就斷線，
+    這樣 OneWeb／NAT 映射失效或對方斷電時，20 幾秒內就會發現並重連，而不是等核心預設的十幾分鐘。"""
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    for opt, val in (("TCP_KEEPIDLE", 10), ("TCP_KEEPINTVL", 5), ("TCP_KEEPCNT", 3), ("TCP_USER_TIMEOUT", user_timeout_ms)):
+        if hasattr(socket, opt):
+            sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, opt), val)
+
+
+def _tcp_info(sock: socket.socket) -> dict:
+    """Linux TCP_INFO：RTT（ms）與累計重傳數（struct tcp_info 的 tcpi_rtt @68、tcpi_total_retrans @100）。"""
+    try:
+        raw = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 104)
+        return {"rtt_ms": round(struct.unpack_from("I", raw, 68)[0] / 1000, 1),
+                "retrans": struct.unpack_from("I", raw, 100)[0]}
+    except (OSError, struct.error, AttributeError):
+        return {}
+
+
+class _TcpSession:
+    """mode=tcp：TS 位元流走 TCP。role=server 等對方連進來（可多個），role=client 主動連到 server。
+    read() 回傳 (連線 key, bytes)，bytes 為空表示該連線結束；Link 依 key 各用一個解多工器。"""
+    paced = False
+    reliable = True
+
+    def __init__(self, cfg: dict, log: logging.Logger):
+        t = cfg["tcp"]
+        self.role = t.get("role", "client")
+        self.log = log
+        self.closed = False
+        self.user_timeout_ms = int(float(t.get("timeout_s", 20)) * 1000)
+        self._q = queue.Queue()
+        self._conns = {}          # key -> socket
+        self._since = {}          # key -> 連線建立時間
+        self._lock = threading.Lock()
+        self.srv = None
+        self.peer = None
+        if self.role == "server":
+            self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.srv.bind(_hostport(t["listen"]))
+            self.srv.listen(8)
+            self.srv.settimeout(0.5)
+            self.log.info("TCP server 等待連線：%s", t["listen"])
+            threading.Thread(target=self._accept_loop, name="tcp-accept", daemon=True).start()
+        elif self.role == "client":
+            host, port = _hostport(t["connect"])
+            self.peer = f"{host}:{port}"
+            sock = socket.create_connection((host, port), timeout=float(t.get("connect_timeout_s", 10)))
+            self._add(self.peer, sock)
+            self.log.info("TCP 已連上地面站 %s", self.peer)
+        else:
+            raise ValueError(f"tcp.role 必須是 server 或 client，不是 {self.role!r}")
+
+    # ---- connections ----
+    def _add(self, key: str, sock: socket.socket):
+        _tcp_tune(sock, self.user_timeout_ms)
+        sock.settimeout(self.user_timeout_ms / 1000)
+        with self._lock:
+            self._conns[key] = sock
+            self._since[key] = time.time()
+        threading.Thread(target=self._reader, args=(key, sock), name=f"tcp-rx-{key}", daemon=True).start()
+
+    def _drop(self, key: str, why: str = ""):
+        with self._lock:
+            sock = self._conns.pop(key, None)
+            self._since.pop(key, None)
+        if sock is None:
+            return
+        try:
+            sock.close()
+        except OSError:
+            pass
+        self.log.warning("TCP 連線結束 %s%s", key, f"：{why}" if why else "")
+        if self.role == "client":
+            self.closed = True      # 讓 supervisor 重連
+
+    def _accept_loop(self):
+        while not self.closed:
+            try:
+                sock, addr = self.srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            key = f"{addr[0]}:{addr[1]}"
+            self.peer = key
+            self.log.info("TCP 連線建立：%s", key)
+            self._add(key, sock)
+
+    def _reader(self, key: str, sock: socket.socket):
+        why = ""
+        try:
+            while not self.closed:
+                try:
+                    data = sock.recv(TCP_CHUNK)
+                except socket.timeout:
+                    continue
+                if not data:
+                    why = "對方關閉"
+                    break
+                self._q.put((key, data))
+        except OSError as e:
+            why = str(e)
+        finally:
+            self._drop(key, why)
+            self._q.put((key, b""))
+
+    # ---- session API ----
+    def alive(self):
+        return not self.closed
+
+    def write(self, data: bytes):
+        with self._lock:
+            conns = list(self._conns.items())
+        if not conns:
+            if self.role == "client":
+                raise OSError("TCP 未連線")
+            return      # server 沒有人連著：丟掉（指令與通知由應用層重送）
+        for key, sock in conns:
+            try:
+                sock.sendall(data)
+            except OSError as e:
+                self._drop(key, f"送出失敗 {e}")
+
+    def read(self):
+        try:
+            return self._q.get(timeout=0.5)
+        except queue.Empty:
+            return None
+
+    def close(self):
+        self.closed = True
+        with self._lock:
+            socks = list(self._conns.values())
+        for sock in socks:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def cleanup(self):
+        with self._lock:
+            socks = list(self._conns.values())
+            self._conns.clear()
+            self._since.clear()
+        for sock in socks:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if self.srv:
+            self.srv.close()
+
+    def info(self) -> dict:
+        with self._lock:
+            conns = list(self._conns.items())
+            since = dict(self._since)
+        out = {"transport": "tcp", "role": self.role, "connected": bool(conns), "clients": len(conns),
+               "peer": conns[-1][0] if conns else self.peer,
+               "since": min(since.values()) if since else None}
+        if conns:
+            out.update(_tcp_info(conns[-1][1]))
+        return out
 
 
 FPGA_CHUNK = 32 * 1024   # dvbs2_b210 每個 UDP 封包各自成框；大封包減少 BBFRAME 補零的浪費
@@ -361,6 +540,8 @@ class Link:
         self._msg_id = itertools.count(1)
         self._mux = TsMuxer(self.pid)
         self._demux = TsDemuxer(self.pid, self._deliver)
+        self._demuxers = {}        # tcp server：每條連線一個解多工器（key -> TsDemuxer）
+        self._demux_done = {}      # 已結束連線的累計統計
         self._running = False
         self._session = None
         self._stats = {"mode": self.mode, "state": "stopped", "tx_messages": 0, "tx_bytes": 0,
@@ -385,10 +566,22 @@ class Link:
         self._q.put((priority, next(self._order), (int(msg_type), mid, payload)))
         return mid
 
+    @property
+    def reliable(self) -> bool:
+        """TCP 等可靠傳輸：應用層不必為了掉包重送。"""
+        return self.mode == "tcp"
+
     def stats(self) -> dict:
         s = dict(self._stats)
-        s.update(self._demux.stats)
+        agg = dict(self._demux_done)
+        for d in [self._demux, *list(self._demuxers.values())]:
+            for k, v in d.stats.items():
+                agg[k] = agg.get(k, 0) + v
+        s.update(agg)
         s["queue"] = self._q.qsize()
+        sess = self._session
+        if sess is not None and hasattr(sess, "info"):
+            s.update(sess.info())
         return s
 
     def modem(self) -> dict | None:
@@ -416,11 +609,13 @@ class Link:
     def _open(self):
         if self.mode == "udp":
             return _UdpSession(self.cfg)
+        if self.mode == "tcp":
+            return _TcpSession(self.cfg, self.log)
         if self.mode == "fpga":
             return _FpgaSession(self.cfg, self.log_dir, self.log)
         if self.mode in ("dvbs2", "loopback"):
             return _Dvbs2Session(self.cfg, self.log_dir, self.mode == "loopback", self.log)
-        raise ValueError(f"未知的 link.mode: {self.mode}（可用 fpga / udp / dvbs2 / loopback）")
+        raise ValueError(f"未知的 link.mode: {self.mode}（可用 tcp / fpga / udp / dvbs2 / loopback）")
 
     def _supervise(self):
         while self._running:
@@ -446,7 +641,10 @@ class Link:
             if self._running:
                 self._stats["restarts"] += 1
                 self._stats["state"] = "restarting"
-                self.log.warning("鏈路子行程結束，3 秒後重新啟動（請看 %s/*.log）", self.log_dir)
+                if self.mode == "tcp":
+                    self.log.warning("TCP 鏈路中斷，3 秒後重新連線")
+                else:
+                    self.log.warning("鏈路子行程結束，3 秒後重新啟動（請看 %s/*.log）", self.log_dir)
                 time.sleep(3)
         self._stats["state"] = "stopped"
 
@@ -474,12 +672,26 @@ class Link:
     def _rx_loop(self, session):
         while not session.closed:
             try:
-                data = session.read()
+                item = session.read()
             except OSError:
                 break
-            if data is None:
+            if item is None:
                 continue
-            if not data:
-                break
+            if isinstance(item, tuple):          # tcp：(連線 key, bytes)
+                key, data = item
+                if not data:
+                    done = self._demuxers.pop(key, None)
+                    if done:
+                        for k, v in done.stats.items():
+                            self._demux_done[k] = self._demux_done.get(k, 0) + v
+                    continue
+                demux = self._demuxers.get(key)
+                if demux is None:
+                    demux = self._demuxers[key] = TsDemuxer(self.pid, self._deliver)
+            else:
+                data = item
+                if not data:
+                    break
+                demux = self._demux
             self._stats["rx_bytes"] += len(data)
-            self._demux.feed(data)
+            demux.feed(data)

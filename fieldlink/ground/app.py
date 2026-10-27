@@ -4,7 +4,7 @@
 - DVB-S2 接收 Jetson 的辨識結果、心跳（含手機清單）、被選手機的縮圖；結果存進 SQLite、嚴重事件影像存檔
 - 網頁儀表板 http://localhost:8080 即時顯示狀態、歷史、嚴重事件影像、手機清單與縮圖
 - 從網頁選手機 → DVB-S2 上行 SELECT 到 Jetson（沒收到 ACK 自動重送）；輸入文字 → NOTIFY，同樣有 ACK 重送
-- 訊息都帶 node id；目前一條鏈路對一台 Jetson，多台時每台配一台 USRP、各開一條鏈路
+- 訊息都帶 node id；DVB-S2 時一條鏈路對一台 Jetson（多台要各配一台 USRP）；tcp 模式一個 server 可接多台 Jetson
 """
 import argparse
 import asyncio
@@ -313,7 +313,7 @@ def build_app(gs: GroundStation) -> web.Application:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default=str(ROOT / "config" / "ground.yaml"))
-    p.add_argument("--link-mode", help="覆寫 link.mode（fpga / udp / dvbs2 / loopback）")
+    p.add_argument("--link-mode", help="覆寫 link.mode（tcp / fpga / udp / dvbs2 / loopback）")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = yaml.safe_load(open(a.config, encoding="utf-8"))

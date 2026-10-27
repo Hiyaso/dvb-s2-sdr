@@ -113,11 +113,16 @@ class JetsonNode:
                 self.yolo_state = "error"
                 self.last_error = f"YOLO 載入失敗，改為只用 VLM：{e}"
                 log.error(self.last_error)
-        try:
-            await self.vlm.warmup()
-        except Exception as e:
-            self.last_error = f"VLM 載入失敗：{e}"
-            log.error(self.last_error)
+        for attempt in range(1, 4):      # Ollama 可能還在開機或在載入模型：最多試 3 次
+            try:
+                await self.vlm.warmup()
+                if (self.last_error or "").startswith("VLM 載入失敗"):
+                    self.last_error = None
+                break
+            except Exception as e:
+                self.last_error = f"VLM 載入失敗：{e or type(e).__name__}"
+                log.error("%s（第 %d 次）", self.last_error, attempt)
+                await asyncio.sleep(10)
 
     # ---------- capture + YOLO + VLM（多支手機輪流） ----------
     async def _capture_loop(self):

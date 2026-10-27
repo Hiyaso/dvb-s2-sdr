@@ -49,8 +49,8 @@ class VlmClient:
             body["think"] = bool(self.cfg["think"])
         return body
 
-    async def _post(self, body):
-        timeout = aiohttp.ClientTimeout(total=float(self.cfg.get("timeout_s", 30)))
+    async def _post(self, body, timeout_s: float | None = None):
+        timeout = aiohttp.ClientTimeout(total=float(timeout_s or self.cfg.get("timeout_s", 30)))
         async with self.session.post(f"{self.cfg['url']}/api/chat", json=body, timeout=timeout) as r:
             if r.status != 200:
                 raise RuntimeError(f"Ollama HTTP {r.status}: {(await r.text())[:200]}")
@@ -59,7 +59,9 @@ class VlmClient:
     async def warmup(self):
         """啟動時先載入模型，第一次推論才不會慢。"""
         t = time.time()
-        await self._post(self._body([{"role": "user", "content": "ok"}], 1))
+        # 開機後第一次要從 microSD 讀 2 GB 模型進 GPU，常超過 30 秒，所以用較長的 timeout
+        await self._post(self._body([{"role": "user", "content": "ok"}], 1),
+                         timeout_s=float(self.cfg.get("warmup_timeout_s", 180)))
         log.info("VLM %s 已載入（%.1f 秒）", self.model, time.time() - t)
 
     async def classify(self, jpeg: bytes, context: str = "") -> dict:

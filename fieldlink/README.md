@@ -116,6 +116,7 @@ link:
 - 地面站要能被連到：路由器轉發 TCP 6767 → 地面站電腦 ＋ `sudo ufw allow 6767/tcp`；對外 IP 變了要改 Nano 的 `connect`。
   不想依賴路由器時，兩邊裝 Tailscale、`connect` 填地面站的 100.x.x.x，順便可以從任何地方 SSH 進 Nano。
 - 2026-10-27 驗證：本機兩程式經公網位址 123.193.37.73:6767（路由器 hairpin）連線，報告、縮圖、選手機 ACK、通知全部通過；地面站重啟後 Nano 端 8 秒內重連。
+  真 Nano 經 OneWeb（終端 192.168.100.1，對外 175.111.235.59）連上：RTT 約 300 ms、TCP 重傳 0、SELECT 來回 0.4 秒；路徑 20 跳（衛星約 120 ms，再經中華電信國際閘道 → 洛杉磯 → Arelion → PCCW → 台灣固網 → 凱擘），見 `docs/架構圖_oneweb.svg` 底部。
 
 ## 鏈路設定（備用：FPGA 數據機，`link.mode: fpga`）
 

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="950" viewBox="0 0 1500 950" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, sans-serif" font-size="14">
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1030" viewBox="0 0 1500 1030" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, sans-serif" font-size="14">
   <defs>
     <marker id="ar" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
@@ -10,8 +10,8 @@
       <path d="M0,0 L10,5 L0,10 z" fill="#1c64f2"/>
     </marker>
   </defs>
-  <rect width="1500" height="960" fill="#ffffff"/>
-  <text x="750" y="38" text-anchor="middle" font-size="24" font-weight="700" fill="#111">場域災害偵測系統 架構圖（Nano 端 ／ PC 端）— OneWeb 衛星網路版</text>
+  <rect width="1500" height="1030" fill="#ffffff"/>
+  <text x="750" y="38" text-anchor="middle" font-size="24" font-weight="700" fill="#111">場域災害偵測系統 架構圖（Nano 端 ／ PC 端）— OneWeb 衛星網路版（2026-10-27 實測）</text>
 
   <!-- ===================== Nano side ===================== -->
   <rect x="30" y="60" width="620" height="870" rx="12" fill="#eef4ff" stroke="#1c64f2" stroke-width="2"/>
@@ -84,8 +84,8 @@
   <line x1="340" y1="670" x2="340" y2="692" stroke="#333" marker-end="url(#ar)"/>
   <rect x="50" y="694" width="580" height="92" rx="8" fill="#fff" stroke="#1c64f2"/>
   <text x="340" y="716" text-anchor="middle" font-weight="700">OneWeb 使用者終端（低軌衛星上網）</text>
-  <text x="340" y="736" text-anchor="middle" fill="#444" font-size="12.5">Ku 頻段對衛星、衛星轉地面閘道站進網際網路 · 往返延遲實測約 300 ms</text>
-  <text x="340" y="754" text-anchor="middle" fill="#444" font-size="12.5">終端在 CGNAT 後面：沒有公網 IP、不能被連入 → 由 Nano 發起 TCP 連線</text>
+  <text x="340" y="736" text-anchor="middle" fill="#444" font-size="12.5">Nano enP8p1s0 192.168.100.13 → 終端 192.168.100.1 · 對外 IP 175.111.235.59（中華電信國際閘道）</text>
+  <text x="340" y="754" text-anchor="middle" fill="#444" font-size="12.5">Ku 頻段對低軌衛星 · 終端在 CGNAT 後面：沒有公網 IP、不能被連入 → 由 Nano 發起 TCP 連線</text>
   <text x="340" y="774" text-anchor="middle" fill="#444" font-size="12.5">本系統流量 &lt; 0.5 Mbit/s（報告＋縮圖＋嚴重影像），遠低於終端上傳頻寬</text>
 
   <rect x="50" y="810" width="275" height="56" rx="8" fill="#fff3e8" stroke="#d9480f"/>
@@ -150,7 +150,7 @@
   <text x="1160" y="716" text-anchor="middle" font-weight="700">路由器／NAT（一般網路，對外 123.193.37.73）</text>
   <text x="1160" y="736" text-anchor="middle" fill="#444" font-size="12.5">通訊埠轉發：TCP 6767 → 地面站電腦 192.168.0.80:6767</text>
   <text x="1160" y="754" text-anchor="middle" fill="#444" font-size="12.5">對外 IP 若被電信業者更換，要改 Nano 的 link.tcp.connect（或兩邊改用 Tailscale 就不必轉發）</text>
-  <text x="1160" y="774" text-anchor="middle" fill="#444" font-size="12.5">已驗證：從公網位址 123.193.37.73:6767 連入會到達地面站程式</text>
+  <text x="1160" y="774" text-anchor="middle" fill="#444" font-size="12.5">已驗證：Nano 經 OneWeb 連入（對方 IP 175.111.235.59）· RTT 約 300 ms · TCP 重傳 0</text>
 
   <rect x="870" y="810" width="275" height="56" rx="8" fill="#e8f1ff" stroke="#1c64f2"/>
   <text x="1007" y="832" text-anchor="middle" font-weight="600" fill="#1c64f2">從 Nano 收（下行資料）</text>
@@ -170,7 +170,7 @@
   <text x="750" y="684" text-anchor="middle" font-size="12" fill="#444">衛星 → 閘道站 → 網際網路</text>
   <text x="750" y="700" text-anchor="middle" font-size="12" fill="#444">→ 路由器轉發 → 地面站</text>
   <text x="750" y="724" text-anchor="middle" font-size="12" fill="#444">可靠傳輸：不丟包、不節流</text>
-  <text x="750" y="740" text-anchor="middle" font-size="12" fill="#444">往返延遲實測約 0.3 秒</text>
+  <text x="750" y="740" text-anchor="middle" font-size="12" fill="#444">往返延遲實測約 0.3 秒（20 跳）</text>
   <text x="750" y="764" text-anchor="middle" font-size="12" fill="#444">心跳每 2 秒維持 NAT 映射</text>
   <text x="750" y="780" text-anchor="middle" font-size="12" fill="#444">斷線 3 秒內自動重連</text>
   <line x1="652" y1="822" x2="846" y2="822" stroke="#d9480f" stroke-width="3" marker-end="url(#arO)"/>
@@ -183,4 +183,11 @@
   <text x="750" y="238" text-anchor="middle" font-size="12" fill="#666">維護用 SSH（選用）</text>
   <text x="750" y="266" text-anchor="middle" font-size="11.5" fill="#666">USB-C 192.168.55.1 / 熱點 10.42.0.1</text>
   <text x="750" y="282" text-anchor="middle" font-size="11.5" fill="#666">或兩邊裝 Tailscale 經網路 SSH</text>
+
+  <!-- ===================== measured route ===================== -->
+  <rect x="30" y="942" width="1440" height="80" rx="8" fill="#f7f7f7" stroke="#999"/>
+  <text x="750" y="960" text-anchor="middle" font-size="12.5" font-weight="700" fill="#333">實測路徑 Nano → 地面站（ping 遞增 TTL，20 跳，RTT 約 300 ms：衛星段約 120 ms，其餘是繞經美國西岸的國際骨幹；回程在 OneWeb 閘道之後因 CGNAT 看不到）</text>
+  <text x="750" y="978" text-anchor="middle" font-size="12" fill="#444">OneWeb 終端 → 衛星 → OneWeb 閘道 → 中華電信國際閘道 TWGate（AS9505）→ 洛杉磯 PoP → Arelion（AS1299）×4 → PCCW Global（AS3491）×2 → 台灣固網（AS9924）×4 → 凱擘 kbro（AS38841）×3 → 路由器 → 電腦</text>
+  <text x="750" y="996" text-anchor="middle" font-size="11.5" fill="#666">1 192.168.100.1 → 2 *（衛星段）→ 3 10.82.250.193 → 4 175.41.63.126 → 5 175.41.63.125 → 6 203.78.187.182 → 7 62.115.175.218 → 8 62.115.140.228 → 9 62.115.140.157 → 10 213.248.97.139 → 11 63.223.19.238</text>
+  <text x="750" y="1013" text-anchor="middle" font-size="11.5" fill="#666">→ 12 63.222.54.6 → 13 60.199.47.89 → 14 60.199.21.42 → 15 60.199.28.22 → 16 219.80.112.242 → 17 10.4.21.229 → 18 10.4.21.34 → 19 10.2.6.18 → 20 123.193.37.73 → 路由器 192.168.0.1 → 電腦 192.168.0.80</text>
 </svg>

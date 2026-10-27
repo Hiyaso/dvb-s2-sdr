@@ -1,0 +1,850 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>場域監測地面站</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0a0f1a; --bg2: #0d1422; --panel: #0f1829; --panel2: #141f34; --line: #1f2c44; --line2: #2a3a57;
+  --ink: #e4ebf5; --muted: #8b9ab3; --dim: #5d6b84;
+  --accent: #3b82f6; --accent2: #60a5fa; --ok: #22c55e; --warn: #f5a524; --crit: #ef4444; --cyan: #22d3ee;
+  --ok-tint: rgba(34,197,94,.14); --warn-tint: rgba(245,165,36,.14); --crit-tint: rgba(239,68,68,.16);
+  --font: "Noto Sans TC", "Inter", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "DejaVu Sans Mono", "Menlo", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.55 var(--font); font-variant-numeric: tabular-nums; }
+h1, h2, h3 { margin: 0; font-weight: 600; }
+button, textarea, select, input { font: inherit; color: inherit; }
+a { color: var(--accent2); text-decoration: none; }
+:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
+
+/* ---------- 頂部列 ---------- */
+.topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 18px; padding: 8px 20px;
+  background: var(--bg2); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; white-space: nowrap; }
+.brand .logo { width: 10px; height: 10px; border-radius: 50%; background: var(--accent2); box-shadow: 0 0 10px var(--accent2); }
+.brand .ver { font-size: 11px; color: var(--muted); font-weight: 500; }
+.tabs { display: flex; gap: 4px; flex: none; }
+.tabs a { padding: 6px 12px; border-radius: 6px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+.tabs a.active, .tabs a:hover { background: var(--panel2); color: var(--ink); }
+.tabs a.active { box-shadow: inset 0 0 0 1px var(--line2); }
+.topright { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px; background: var(--panel2);
+  border: 1px solid var(--line2); font-size: 13px; white-space: nowrap; max-width: 46vw; }
+.chip > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.brand { flex: none; }
+.chip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+.link[data-state="up"] .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.link[data-state="down"] .dot { background: var(--crit); }
+.link[data-state="down"] { color: var(--crit); border-color: rgba(239,68,68,.5); }
+.link-warn { color: var(--warn); }
+.user .avatar { width: 18px; height: 18px; border-radius: 50%; background: var(--warn); }
+.clock { text-align: right; line-height: 1.15; }
+.clock .big { font: 700 22px/1 var(--mono); letter-spacing: .02em; }
+.clock .utc { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+/* ---------- 狀態橫幅 ---------- */
+.banner { display: flex; align-items: center; gap: 18px; margin: 14px 20px 0; padding: 14px 18px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--dim); }
+.banner .mark { width: 14px; height: 14px; border-radius: 50%; background: var(--dim); flex: none; }
+.banner h2 { font-size: 24px; letter-spacing: .02em; }
+.banner p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.banner .actions { margin-left: auto; display: flex; gap: 10px; flex: none; }
+.banner[data-status="normal"] { border-left-color: var(--ok); } .banner[data-status="normal"] .mark { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+.banner[data-status="warning"] { border-left-color: var(--warn); background: linear-gradient(90deg, var(--warn-tint), var(--panel) 60%); } .banner[data-status="warning"] .mark { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+.banner[data-status="critical"] { border-left-color: var(--crit); background: linear-gradient(90deg, var(--crit-tint), var(--panel) 60%); } .banner[data-status="critical"] .mark { background: var(--crit); box-shadow: 0 0 10px var(--crit); }
+.banner[data-status="critical"] h2 { color: #ff6b6b; }
+.banner[data-status="warning"] h2 { color: var(--warn); }
+.banner[data-status="acked"] { border-left-color: var(--line2); } .banner[data-status="acked"] .mark { background: var(--dim); }
+.banner[data-status="acked"] h2 { color: var(--muted); }
+.now[data-status="acked"] .now-status { color: var(--muted); }
+.banner.flash { animation: flash 1.2s ease-out 1; }
+@keyframes flash { 0% { box-shadow: 0 0 0 999px rgba(239,68,68,.18) inset; } 100% { box-shadow: none; } }
+@media (prefers-reduced-motion: reduce) { .banner.flash { animation: none; } }
+
+.btn { border: 0; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; background: var(--panel2); color: var(--ink);
+  border: 1px solid var(--line2); white-space: nowrap; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { background: var(--crit); border-color: var(--crit); color: #fff; }
+.btn.warn { background: var(--warn); border-color: var(--warn); color: #1a1200; }
+.btn.small { padding: 4px 10px; font-size: 13px; font-weight: 500; }
+.btn[disabled] { opacity: .5; cursor: default; }
+
+/* ---------- 面板格線 ---------- */
+.grid { display: grid; gap: 14px; padding: 14px 20px 24px; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 0; display: flex; flex-direction: column; }
+.panel > header { display: flex; align-items: center; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+.panel > header h2 { font-size: 13.5px; letter-spacing: .02em; }
+.panel > header .meta { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; gap: 10px; align-items: center; }
+.panel > .body { padding: 12px 14px; flex: 1; min-width: 0; }
+.c4 { grid-column: span 4; } .c5 { grid-column: span 5; } .c3 { grid-column: span 3; } .c6 { grid-column: span 6; } .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+@media (max-width: 1280px) { .c3, .c4, .c5 { grid-column: span 6; } .c8 { grid-column: span 12; } }
+@media (max-width: 820px) { .grid { padding: 12px; } .banner { margin: 12px 12px 0; flex-wrap: wrap; } .c3, .c4, .c5, .c6, .c8 { grid-column: span 12; } }
+
+/* 指標卡（像 AZ / EL 那種） */
+.metrics { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.metric { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.metric .k { font-size: 12px; color: var(--muted); }
+.metric .v { font: 700 30px/1.1 var(--mono); margin-top: 4px; white-space: nowrap; }
+.metric .v small { font: 500 13px var(--font); color: var(--muted); margin-left: 3px; }
+.metric .s { font-size: 11px; color: var(--dim); margin-top: 4px; }
+.metric.big .v { font-size: 40px; }
+.metric.ok .v { color: var(--ok); } .metric.warn .v { color: var(--warn); } .metric.crit .v { color: var(--crit); }
+
+/* 目前狀態 */
+.now-status { font-size: 42px; line-height: 1.1; font-weight: 800; letter-spacing: .08em; color: var(--muted); }
+.now[data-status="normal"] .now-status { color: var(--ok); }
+.now[data-status="warning"] .now-status { color: var(--warn); }
+.now[data-status="critical"] .now-status { color: var(--crit); }
+.now-text { font-size: 17px; line-height: 1.5; margin: 8px 0 4px; }
+.now-meta { margin: 0 0 12px; color: var(--muted); font-size: 12.5px; }
+
+/* 手機 */
+.plist { list-style: none; padding: 0; margin: 0; }
+.plist li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.plist li:first-child { border-top: 0; padding-top: 2px; }
+.plist .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+.plist li[data-fresh="1"] .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.plist li[data-online="1"]:not([data-fresh="1"]) .dot { background: var(--warn); }
+.plist .pname { font-weight: 600; }
+.plist .pstate { color: var(--muted); font-size: 12px; }
+.plist .tag { margin-left: 6px; }
+.plist button { margin-left: auto; }
+.plist li[data-selected="1"] button { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tag { display: inline-block; padding: 0 7px; border-radius: 4px; font-size: 12px; font-weight: 600; white-space: nowrap; line-height: 1.6; }
+.tag.normal { background: var(--ok-tint); color: var(--ok); }
+.tag.warning { background: var(--warn-tint); color: var(--warn); }
+.tag.critical { background: var(--crit); color: #fff; }
+.tag.neutral { background: var(--panel2); color: var(--muted); border: 1px solid var(--line2); }
+.tag.lock { background: rgba(34,197,94,.18); color: var(--ok); border: 1px solid rgba(34,197,94,.4); }
+.tag.unlock { background: rgba(239,68,68,.15); color: var(--crit); border: 1px solid rgba(239,68,68,.4); }
+.tag.on { background: rgba(34,197,94,.18); color: var(--ok); border: 1px solid rgba(34,197,94,.4); }
+.tag.off { background: var(--panel2); color: var(--warn); border: 1px solid rgba(245,165,36,.5); }
+.btn.ok { background: var(--ok); border-color: var(--ok); color: #06240f; }
+.empty { color: var(--muted); margin: 6px 0 0; font-size: 13px; }
+.settings { display: flex; gap: 8px 14px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.settings label { display: flex; align-items: center; gap: 6px; }
+select, .num { background: var(--bg2); border: 1px solid var(--line2); border-radius: 5px; padding: 3px 8px; color: var(--ink); }
+select[disabled] { opacity: .6; }
+.selmsg { font-size: 12.5px; margin: 8px 0 0; min-height: 1.4em; color: var(--muted); }
+.selmsg.failed { color: var(--crit); }
+
+/* 縮圖 */
+.thumbwrap { margin: 0; }
+.thumbwrap img { display: block; width: 100%; height: auto; max-height: 300px; object-fit: contain; border: 1px solid var(--line2); border-radius: 6px; background: #000; }
+.thumbwrap figcaption { margin-top: 6px; color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.thumb-empty { aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--line2); border-radius: 6px; color: var(--muted); font-size: 13px; }
+
+/* DVB-S2 */
+.dvb { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; }
+@media (max-width: 1000px) { .dvb { grid-template-columns: 1fr; } }
+.dvb .left .metrics { grid-template-columns: 1fr 1fr; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12.5px; margin-top: 10px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--mono); }
+.kv dd.bad { color: var(--crit); }
+.plot { background: #06090f; border: 1px solid var(--line); border-radius: 6px; position: relative; }
+.plot canvas { display: block; width: 100%; }
+.plot .axis { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--muted); padding: 3px 6px; border-top: 1px solid var(--line); }
+.plot-head { display: flex; gap: 10px; align-items: center; margin: 0 0 8px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
+.plot-head .num { width: 64px; font-family: var(--mono); }
+
+/* 時間軸 */
+.tally { display: flex; gap: 14px; font-size: 12.5px; color: var(--muted); }
+.tally b { font-weight: 600; color: var(--ink); }
+#strip { display: block; width: 100%; height: 84px; margin-top: 4px; border-bottom: 1px solid var(--line); }
+#strip .s-normal { fill: var(--ok); } #strip .s-warning { fill: var(--warn); } #strip .s-critical { fill: var(--crit); }
+.strip-axis { display: flex; justify-content: space-between; color: var(--muted); font: 11px var(--mono); margin-top: 4px; }
+
+/* 影像 */
+.evidence figure { margin: 0; }
+.evidence img { display: block; width: 100%; height: auto; border: 1px solid var(--line2); border-radius: 6px; background: #000; }
+.evidence figcaption { margin-top: 8px; font-size: 13px; }
+.evidence figcaption .when { color: var(--muted); font-size: 12px; display: block; }
+
+/* 紀錄 */
+.filters { display: flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden; }
+.filters button { border: 0; background: transparent; padding: 3px 11px; cursor: pointer; color: var(--muted); }
+.filters button + button { border-left: 1px solid var(--line2); }
+.filters button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.table-wrap { overflow: auto; max-height: 56vh; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 600; color: var(--muted); padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); font-size: 12px; }
+td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.t { white-space: nowrap; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+td.l { white-space: nowrap; text-align: right; color: var(--muted); font-family: var(--mono); }
+.det { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.esc { display: block; color: var(--crit); font-size: 12px; font-weight: 600; margin-top: 2px; }
+tr.new td { animation: rowin 1.2s ease-out; }
+@keyframes rowin { from { background: var(--panel2); } to { background: transparent; } }
+
+/* 通知 */
+.notify textarea { width: 100%; resize: vertical; padding: 9px 11px; border: 1px solid var(--line2); border-radius: 6px; background: var(--bg2); line-height: 1.5; }
+.nform-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+#ncount { color: var(--muted); font-size: 12px; }
+.nerr { color: var(--crit); font-size: 13px; margin: 6px 0 0; min-height: 1.4em; }
+.nlist { list-style: none; padding: 0; margin: 6px 0 0; }
+.nlist li { padding: 8px 0; border-top: 1px solid var(--line); }
+.nlist .ntext { overflow-wrap: anywhere; }
+.nlist .nstate { font-size: 12px; color: var(--muted); }
+.nlist .nstate.delivered { color: var(--ok); } .nlist .nstate.failed { color: var(--crit); }
+.offline-banner { background: var(--crit); color: #fff; padding: 7px 20px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="offline-banner" id="offline" hidden>儀表板和地面站程式的連線中斷，正在重新連線。</div>
+
+<header class="topbar">
+  <div class="brand"><span class="logo" aria-hidden="true"></span>場域監測地面站 <span class="ver">v2.0</span></div>
+  <nav class="tabs" aria-label="頁面">
+    <a href="#main" class="active" data-tab="main">主畫面</a><a href="#history" data-tab="history">紀錄</a><a href="#notify" data-tab="notify">通知</a>
+  </nav>
+  <div class="topright">
+    <div class="chip link" id="link" data-state="wait" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="linkText">等待 Jetson 心跳</span></div>
+    <div class="chip user"><span class="avatar" aria-hidden="true"></span>lab602 · 地面站</div>
+    <div class="clock"><div class="big" id="clock">--:--:--</div><div class="utc" id="clockUtc"></div></div>
+  </div>
+</header>
+
+<section class="banner" id="banner" data-status="none" aria-live="polite">
+  <span class="mark" aria-hidden="true"></span>
+  <div><h2 id="bannerTitle">尚無資料</h2><p id="bannerText">Jetson 開始回傳辨識結果後，最新一筆會顯示在這裡。</p></div>
+  <div class="actions"><button type="button" class="btn primary" id="detectBtn">開始偵測</button><button type="button" class="btn danger" id="bannerImg" hidden>看影像</button><button type="button" class="btn warn" id="bannerAck" hidden>清空</button><button type="button" class="btn" id="bannerNotify">送通知到 Jetson</button></div>
+</section>
+
+<main class="grid" id="main">
+  <section class="panel c5 now" id="now" data-status="none">
+    <header><h2>目前狀態</h2><div class="meta"><span class="tag neutral" id="detectChip">偵測狀態未知</span><span id="nowPhone"></span></div></header>
+    <div class="body">
+      <div class="now-status" id="nowLabel">尚無資料</div>
+      <p class="now-text" id="nowText">Jetson 開始回傳辨識結果後，最新一筆會顯示在這裡。</p>
+      <p class="now-meta" id="nowMeta"></p>
+      <div class="metrics">
+        <div class="metric"><div class="k">最近一次 VLM</div><div class="v" id="mVlm">—<small>秒</small></div><div class="s" id="mVlmS"></div></div>
+        <div class="metric"><div class="k">30 分鐘內</div><div class="v" id="mTally">—</div><div class="s" id="mTallyS">一般／警告／嚴重</div></div>
+        <div class="metric"><div class="k">報告間隔</div><div class="v" id="mGap">—<small>秒</small></div><div class="s">最近兩筆</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel c4">
+    <header><h2>手機</h2><div class="meta"><span id="phoneHint">輪流辨識，選一支看即時縮圖</span></div></header>
+    <div class="body">
+      <ul class="plist" id="plist"></ul>
+      <p class="empty" id="plistEmpty">還沒有手機連上 Jetson。手機連上熱點 JetsonCam 後開啟 https://10.42.0.1:8443/camera。</p>
+      <div class="settings" id="settings" aria-label="縮圖與辨識設定">
+        <label>縮圖
+          <select id="setFps">
+            <option value="0">不送</option><option value="0.5">每 2 秒 1 張</option><option value="1">每秒 1 張</option>
+            <option value="2">每秒 2 張</option><option value="3">每秒 3 張</option>
+          </select></label>
+        <label>大小
+          <select id="setSide">
+            <option value="240">240 px</option><option value="320">320 px</option><option value="480">480 px</option><option value="640">640 px</option>
+          </select></label>
+        <label>VLM 影像
+          <select id="setVlm">
+            <option value="320">320 px</option><option value="448">448 px</option><option value="640">640 px</option>
+          </select></label>
+      </div>
+      <p class="selmsg" id="selmsg" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <section class="panel c3">
+    <header><h2>即時縮圖</h2><div class="meta" id="thumbRate"></div></header>
+    <div class="body">
+      <figure class="thumbwrap" id="thumbwrap" hidden>
+        <img id="thumb" alt="">
+        <figcaption><span id="thumbCap"></span></figcaption>
+      </figure>
+      <div class="thumb-empty" id="thumbEmpty">還沒有縮圖。選一支手機後，Jetson 會持續回傳它的畫面。</div>
+      <div class="metrics" style="margin-top:10px">
+        <div class="metric"><div class="k">縮圖速率</div><div class="v" id="mThumb">0<small>張/秒</small></div><div class="s" id="mThumbS">目標 —</div></div>
+        <div class="metric"><div class="k">每張大小</div><div class="v" id="mThumbKb">—<small>kB</small></div><div class="s" id="mThumbPx"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel c8">
+    <header><h2>DVB-S2 接收（下行：Jetson → 地面站）</h2><div class="meta" id="dvbMeta">等待數據機狀態</div></header>
+    <div class="body dvb">
+      <div class="left">
+        <div class="chips" id="dvbChips"><span class="tag neutral">—</span></div>
+        <div class="metrics">
+          <div class="metric big" id="mEsn0Box"><div class="k">Es/N0</div><div class="v" id="mEsn0">—<small>dB</small></div><div class="s" id="mEbn0"></div></div>
+          <div class="metric big" id="mRateBox"><div class="k">解碼率</div><div class="v" id="mRate">—<small>%</small></div><div class="s" id="mRateS"></div></div>
+          <div class="metric"><div class="k">頻率偏移</div><div class="v" id="mCfo">—<small>kHz</small></div><div class="s" id="mCfoS"></div></div>
+          <div class="metric"><div class="k">訊號電平</div><div class="v" id="mLevel">—<small>dBFS</small></div><div class="s" id="mLevelS"></div></div>
+        </div>
+        <dl class="kv" id="dvbKv"></dl>
+      </div>
+      <div class="right">
+        <div class="plot-head">
+          <span>頻譜</span>
+          <label>範圍 <input class="num" id="dbMin" type="number" value="-110" step="5"> ~ <input class="num" id="dbMax" type="number" value="-30" step="5"> dB</label>
+          <span id="specInfo"></span>
+        </div>
+        <div class="plot"><canvas id="spec" width="1024" height="170"></canvas><div class="axis" id="specAxis"><span>−fs/2</span><span>−fs/4</span><span>fc</span><span>+fs/4</span><span>+fs/2</span></div></div>
+        <div class="plot" style="margin-top:8px"><canvas id="wf" width="1024" height="120"></canvas><div class="axis"><span>瀑布圖（每秒一列，最近 120 秒）</span><span id="wfInfo"></span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel c4">
+    <header><h2>鏈路與上行</h2><div class="meta" id="upMeta"></div></header>
+    <div class="body">
+      <div class="chips" id="upChips"><span class="tag neutral">等待心跳</span></div>
+      <div class="metrics">
+        <div class="metric"><div class="k">Jetson 收 Es/N0</div><div class="v" id="mUpEsn0">—<small>dB</small></div><div class="s">上行：地面站 → Jetson</div></div>
+        <div class="metric"><div class="k">Jetson 收頻偏</div><div class="v" id="mUpCfo">—<small>kHz</small></div><div class="s" id="mUpS"></div></div>
+      </div>
+      <dl class="kv" id="upKv"></dl>
+    </div>
+  </section>
+
+  <section class="panel c4">
+    <header><h2>最近 30 分鐘</h2><div class="meta tally" id="tally"></div></header>
+    <div class="body">
+      <svg id="strip" viewBox="0 0 1000 80" preserveAspectRatio="none" role="img" aria-label="最近 30 分鐘的狀態時間軸"></svg>
+      <div class="strip-axis"><span>-30 min</span><span>-15 min</span><span>now</span></div>
+    </div>
+  </section>
+
+  <section class="panel c4 evidence" id="evidence">
+    <header><h2>嚴重事件影像</h2><div class="meta" id="evWhen"></div></header>
+    <div class="body">
+      <figure id="figure" hidden><img id="evImg" alt=""><figcaption><span id="evText"></span></figcaption></figure>
+      <p class="empty" id="evEmpty">目前沒有嚴重事件。判定為嚴重時，Jetson 會連同畫上偵測框的影像一起回傳。</p>
+    </div>
+  </section>
+
+  <section class="panel c4 notify" id="notify">
+    <header><h2>傳送通知到 Jetson</h2><div class="meta">送達後 Jetson 會回 ACK</div></header>
+    <div class="body">
+      <form id="nform">
+        <textarea id="ntext" aria-label="通知內容" maxlength="200" rows="3" placeholder="例如：請巡查 B 區後門"></textarea>
+        <div class="nform-foot"><span id="ncount">0 / 200</span><button type="submit" class="btn primary" id="nsend">送出通知</button></div>
+        <p class="nerr" id="nerr" role="alert"></p>
+      </form>
+      <ul class="nlist" id="nlist"></ul>
+    </div>
+  </section>
+
+  <section class="panel c12 history" id="history">
+    <header>
+      <h2>辨識紀錄</h2>
+      <div class="filters" role="group" aria-label="依狀態篩選">
+        <button type="button" data-f="all" aria-pressed="true">全部</button><button type="button" data-f="normal" aria-pressed="false">一般</button>
+        <button type="button" data-f="warning" aria-pressed="false">警告</button><button type="button" data-f="critical" aria-pressed="false">嚴重</button>
+      </div>
+      <div class="meta"><a href="/api/export.csv">匯出 CSV</a></div>
+    </header>
+    <div class="body">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>截圖時間</th><th>手機</th><th>狀態</th><th>描述與偵測</th><th style="text-align:right">VLM</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p class="empty" id="rowsEmpty">還沒有紀錄。</p>
+    </div>
+  </section>
+</main>
+
+<script>
+const WINDOW_S = 30 * 60;
+const S = { reports: [], notes: new Map(), filter: "all", interval: 5, link: null, counts: {},
+            phones: [], selected: null, select: null, thumbTimes: [], settings: {}, lastThumb: null, ackId: 0, clearTs: "" };
+const visible = (r) => r && r.id > S.ackId;          // 「清空」之後只看新進來的報告
+const $ = (id) => document.getElementById(id);
+
+function fmtTime(iso, withDate = false) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const t = d.toLocaleTimeString("zh-TW", { hour12: false });
+  const today = new Date().toDateString() === d.toDateString();
+  return (withDate || !today) ? `${d.getMonth() + 1}/${d.getDate()} ${t}` : t;
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+const LABEL = { normal: "一般", warning: "警告", critical: "嚴重" };
+const num = (v, d = 1) => (v == null || !isFinite(v)) ? "—" : Number(v).toFixed(d);
+function detText(r) {
+  const d = r.detections || [];
+  return d.length ? d.map((a) => `${a.cls}×${a.n}`).join("、") : "沒有偵測到物件";
+}
+function escText(r) {
+  if (!r.escalated_by) return "";
+  const v = r.vlm_status ? `VLM 判定${LABEL[r.vlm_status]}，` : "VLM 無回應，";
+  return `${v}YOLO 規則升級為${LABEL[r.status]}：${(r.reasons || []).join("；")}`;
+}
+
+/* ---------- 時鐘、分頁 ---------- */
+function tick() {
+  const d = new Date();
+  $("clock").textContent = d.toLocaleTimeString("zh-TW", { hour12: false });
+  $("clockUtc").textContent = "UTC " + d.toISOString().slice(11, 19) + " · " + d.toISOString().slice(0, 10);
+}
+tick(); setInterval(tick, 1000);
+document.querySelectorAll(".tabs a").forEach((a) => a.addEventListener("click", () => {
+  document.querySelectorAll(".tabs a").forEach((x) => x.classList.toggle("active", x === a));
+}));
+$("bannerNotify").addEventListener("click", () => { $("notify").scrollIntoView({ behavior: "smooth" }); $("ntext").focus(); });
+$("bannerImg").addEventListener("click", () => { $("evidence").scrollIntoView({ behavior: "smooth" }); });
+
+/* ---------- 目前狀態 ---------- */
+function renderCleared() {
+  const now = $("now"), banner = $("banner");
+  const any = S.reports.length > 0;
+  now.dataset.status = any ? "acked" : "none"; banner.dataset.status = any ? "acked" : "none";
+  $("nowLabel").textContent = any ? "已清除" : "尚無資料";
+  $("nowPhone").textContent = "";
+  $("nowText").textContent = any ? `清空後尚無新報告（${fmtTime(S.clearTs)} 清空）。` : "Jetson 開始回傳辨識結果後，最新一筆會顯示在這裡。";
+  $("nowMeta").textContent = "";
+  $("mVlm").innerHTML = "—<small>秒</small>"; $("mVlmS").textContent = ""; $("mGap").innerHTML = "—<small>秒</small>";
+  $("bannerTitle").textContent = any ? "已清除 — 等待新事件" : "尚無資料";
+  $("bannerText").textContent = any ? `最近 30 分鐘的統計已歸零，之後只累計新報告。` : "Jetson 開始回傳辨識結果後，最新一筆會顯示在這裡。";
+  $("bannerImg").hidden = true; $("bannerAck").hidden = true;
+  document.title = "場域監測地面站";
+}
+function renderNow(r, fresh) {
+  if (!visible(r)) { renderCleared(); return; }
+  const now = $("now"), banner = $("banner");
+  const acked = false;
+  now.dataset.status = r.status; banner.dataset.status = r.status;
+  $("nowLabel").textContent = LABEL[r.status] || r.status;
+  $("nowPhone").textContent = r.phone_name ? `手機：${r.phone_name}` : "";
+  $("nowText").textContent = r.text;
+  const vlmS = r.latency_ms != null ? `VLM ${(r.latency_ms / 1000).toFixed(1)} 秒` : "VLM 無回應";
+  const yoloS = r.yolo_model ? `，YOLO ${r.yolo_ms ?? "?"} ms：${detText(r)}` : "";
+  $("nowMeta").textContent = `截圖 ${fmtTime(r.device_ts)}，地面站收到 ${fmtTime(r.recv_ts)}，${vlmS}${yoloS}` + (r.escalated_by ? `。${escText(r)}` : "");
+  $("mVlm").innerHTML = (r.latency_ms != null ? (r.latency_ms / 1000).toFixed(1) : "—") + "<small>秒</small>";
+  $("mVlmS").textContent = r.yolo_model ? `YOLO ${r.yolo_ms ?? "?"} ms` : "";
+  const prev = S.reports[1];
+  if (visible(prev)) { const gap = (Date.parse(r.device_ts) - Date.parse(prev.device_ts)) / 1000; $("mGap").innerHTML = (gap > 0 ? gap.toFixed(0) : "—") + "<small>秒</small>"; }
+  else $("mGap").innerHTML = "—<small>秒</small>";
+  if (acked) {
+    $("bannerTitle").textContent = `已清除 — 等待新事件`;
+    $("bannerText").textContent = `最後一筆：${LABEL[r.status]}，${r.phone_name || "現場"}，${fmtTime(r.device_ts)}。${r.text}`;
+  } else {
+    $("bannerTitle").textContent = `${LABEL[r.status] || r.status} — ${r.phone_name || "現場"}`;
+    $("bannerText").textContent = r.text + `（截圖 ${fmtTime(r.device_ts)}${r.escalated_by ? "，由 YOLO 規則升級" : ""}）`;
+  }
+  const latestImg = S.reports.find((x) => x.status === "critical" && x.image_url && visible(x));
+  $("bannerImg").hidden = !latestImg;
+  $("bannerAck").hidden = false;
+  document.title = (acked ? "" : r.status === "critical" ? "【嚴重】" : r.status === "warning" ? "【警告】" : "") + "場域監測地面站";
+  if (fresh && r.status === "critical" && !acked) { banner.classList.remove("flash"); void banner.offsetWidth; banner.classList.add("flash"); }
+}
+function hideEvidence() {
+  $("figure").hidden = true; $("evEmpty").hidden = false; $("evWhen").textContent = "";
+  $("evEmpty").textContent = "已清空。下一次判定為嚴重時，影像會再顯示在這裡（紀錄表仍可「看影像」）。";
+}
+$("bannerAck").addEventListener("click", async () => {
+  $("bannerAck").disabled = true;
+  try {
+    const r = await fetch("/api/ack", { method: "POST" });
+    const j = await r.json();
+    S.ackId = j.ack_id; S.clearTs = j.clear_ts || ""; renderNow(S.reports[0], false); hideEvidence(); renderStrip(); renderPhones();
+  } catch (err) { $("bannerText").textContent = `清空失敗：${err.message}`; }
+  finally { $("bannerAck").disabled = false; }
+});
+
+/* ---------- 時間軸 ---------- */
+function renderStrip() {
+  const svg = $("strip");
+  const end = Date.now() / 1000, start = end - WINDOW_S;
+  const w = Math.max(1.6, 1000 * S.interval / WINDOW_S * 0.72);
+  const H = { normal: 26, warning: 52, critical: 80 };
+  let html = "";
+  const tally = { normal: 0, warning: 0, critical: 0 };
+  for (const r of S.reports) {
+    if (!visible(r)) break;
+    const t = Date.parse(r.device_ts || r.recv_ts) / 1000;
+    if (t < start) break;
+    tally[r.status] = (tally[r.status] || 0) + 1;
+    const x = (t - start) / WINDOW_S * 1000 - w;
+    const h = H[r.status] || 26;
+    html += `<rect class="s-${r.status}" x="${x.toFixed(1)}" y="${80 - h}" width="${w.toFixed(2)}" height="${h}"><title>${fmtTime(r.device_ts)} ${LABEL[r.status]}：${esc(r.text)}</title></rect>`;
+  }
+  svg.innerHTML = html;
+  $("tally").innerHTML = `<span>一般 <b>${tally.normal}</b></span><span>警告 <b>${tally.warning}</b></span><span>嚴重 <b>${tally.critical}</b></span>`;
+  $("mTally").textContent = `${tally.normal} / ${tally.warning} / ${tally.critical}`;
+}
+
+/* ---------- 影像 ---------- */
+function showEvidence(r) {
+  if (!r || !r.image_url) return;
+  $("evImg").src = r.image_url;
+  $("evImg").alt = r.text;
+  $("evWhen").textContent = `${fmtTime(r.device_ts, true)} 判定為${LABEL[r.status]}`;
+  $("evText").textContent = (r.phone_name ? `【${r.phone_name}】` : "") + r.text + (r.escalated_by ? `（${escText(r)}）` : "");
+  $("figure").hidden = false;
+  $("evEmpty").hidden = true;
+}
+
+/* ---------- 紀錄表 ---------- */
+function rowHtml(r) {
+  const img = r.image_url ? `<button type="button" class="btn small imgbtn" data-id="${r.id}">看影像</button>` : "";
+  return `<td class="t">${fmtTime(r.device_ts)}</td><td class="t">${esc(r.phone_name || r.phone || "")}</td><td><span class="tag ${r.status}">${LABEL[r.status]}</span></td>` +
+         `<td>${esc(r.text)}${r.yolo_model ? `<span class="det">YOLO：${esc(detText(r))}</span>` : ""}` +
+         `${r.escalated_by ? `<span class="esc">${esc(escText(r))}</span>` : ""}</td>` +
+         `<td class="l">${r.latency_ms != null ? (r.latency_ms / 1000).toFixed(1) + " 秒" : "—"}</td><td>${img}</td>`;
+}
+function renderRows() {
+  const list = S.reports.filter((r) => S.filter === "all" || r.status === S.filter).slice(0, 300);
+  $("rows").innerHTML = list.map((r) => `<tr>${rowHtml(r)}</tr>`).join("");
+  $("rowsEmpty").hidden = list.length > 0;
+}
+function prependRow(r) {
+  if (S.filter !== "all" && r.status !== S.filter) return;
+  const tr = document.createElement("tr");
+  tr.className = "new";
+  tr.innerHTML = rowHtml(r);
+  $("rows").prepend(tr);
+  $("rowsEmpty").hidden = true;
+  while ($("rows").children.length > 300) $("rows").lastElementChild.remove();
+}
+$("rows").addEventListener("click", (e) => {
+  const b = e.target.closest(".imgbtn");
+  if (!b) return;
+  showEvidence(S.reports.find((r) => String(r.id) === b.dataset.id));
+  $("evidence").scrollIntoView({ behavior: "smooth", block: "nearest" });
+});
+document.querySelectorAll(".filters button").forEach((b) => b.addEventListener("click", () => {
+  S.filter = b.dataset.f;
+  document.querySelectorAll(".filters button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  renderRows();
+}));
+
+/* ---------- 手機、設定、縮圖 ---------- */
+function renderPhones() {
+  const list = S.phones || [];
+  $("plistEmpty").hidden = list.length > 0;
+  const sel = S.select || {};
+  $("plist").innerHTML = list.map((p) => {
+    const latest = S.reports.find((r) => r.phone === p.id && visible(r));
+    const st = p.fresh ? "有畫面" : p.online ? `已連線，${p.age_s == null ? "尚無" : p.age_s + " 秒前有"}畫面` : "離線";
+    const tag = latest ? `<span class="tag ${latest.status}">${LABEL[latest.status]}</span>` : "";
+    const isSel = p.id === S.selected;
+    const sending = sel.state === "sending" && sel.phone === p.id;
+    const label = sending ? "傳送中…" : isSel ? "正在看" : "看這支";
+    return `<li data-fresh="${p.fresh ? 1 : 0}" data-online="${p.online ? 1 : 0}" data-selected="${isSel ? 1 : 0}">` +
+      `<span class="dot" aria-hidden="true"></span><span><span class="pname">${esc(p.name)}</span><span class="tag">${tag}</span>` +
+      `<br><span class="pstate">${st}，已辨識 ${p.reports} 次</span></span>` +
+      `<button type="button" class="btn small" data-id="${esc(p.id)}" ${sending ? "disabled" : ""}>${label}</button></li>`;
+  }).join("");
+}
+function settingsText(st) {
+  if (!st || st.thumb_fps == null) return "";
+  const fps = Number(st.thumb_fps);
+  const t = fps <= 0 ? "不送縮圖" : fps < 1 ? `每 ${Math.round(1 / fps)} 秒 1 張縮圖` : `每秒 ${fps} 張縮圖`;
+  return `${t}（${st.thumb_max_side} px），VLM 影像 ${st.vlm_max_side} px`;
+}
+function setOption(sel, value) {
+  const v = String(value);
+  if (![...sel.options].some((o) => o.value === v)) sel.add(new Option(v, v));
+  sel.value = v;
+}
+function renderSettings() {
+  const st = S.settings || {};
+  const pending = S.select && S.select.state === "sending";
+  for (const [id, key] of [["setFps", "thumb_fps"], ["setSide", "thumb_max_side"], ["setVlm", "vlm_max_side"]]) {
+    const el = $(id);
+    el.disabled = !!pending;
+    if (!pending && st[key] != null) setOption(el, st[key]);
+  }
+  if (st.thumb_fps != null) { $("mThumbS").textContent = `目標 ${st.thumb_fps} 張/秒`; $("mThumbPx").textContent = `${st.thumb_max_side} px`; }
+  const btn = $("detectBtn"), chip = $("detectChip");
+  if (st.detect == null) { btn.textContent = "開始偵測"; btn.className = "btn primary"; btn.disabled = true; chip.textContent = "偵測狀態未知"; chip.className = "tag neutral"; return; }
+  const on = Number(st.detect) === 1;
+  btn.disabled = !!pending;
+  btn.textContent = pending ? "等待 Jetson 確認…" : on ? "停止偵測" : "開始偵測";
+  btn.className = "btn " + (on ? "danger" : "ok");
+  chip.textContent = on ? "偵測中" : "偵測已停止";
+  chip.className = "tag " + (on ? "on" : "off");
+}
+$("detectBtn").addEventListener("click", async () => {
+  const on = Number((S.settings || {}).detect) === 1;
+  $("detectBtn").disabled = true;
+  try {
+    const r = await fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: { detect: on ? 0 : 1 } }) });
+    renderSelect(await r.json());
+  } catch (err) { $("selmsg").className = "selmsg failed"; $("selmsg").textContent = `沒有送出：${err.message}`; $("detectBtn").disabled = false; }
+});
+function renderSelect(sel) {
+  S.select = sel;
+  if (sel && sel.applied_settings) S.settings = sel.applied_settings;
+  const el = $("selmsg");
+  el.className = "selmsg";
+  if (!sel || sel.state === "applied") {
+    const p = (S.phones || []).find((x) => x.id === sel?.selected);
+    el.textContent = (p ? `Jetson 正在回傳「${p.name}」的畫面：` : "") + settingsText(S.settings);
+  } else if (sel.state === "sending") {
+    el.textContent = `${sel.settings ? "設定" : "選擇"}已送出，等待 Jetson 確認${sel.tries > 1 ? `（第 ${sel.tries} 次）` : ""}…`;
+  } else if (sel.state === "failed") {
+    el.className = "selmsg failed";
+    el.textContent = "Jetson 沒有確認這次變更，請檢查鏈路後再試。";
+  }
+  renderPhones();
+  renderSettings();
+}
+async function sendSettings() {
+  const settings = { thumb_fps: Number($("setFps").value), thumb_max_side: Number($("setSide").value), vlm_max_side: Number($("setVlm").value) };
+  try {
+    const r = await fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings }) });
+    renderSelect(await r.json());
+  } catch (err) {
+    $("selmsg").className = "selmsg failed"; $("selmsg").textContent = `沒有送出：${err.message}`;
+  }
+}
+for (const id of ["setFps", "setSide", "setVlm"]) $(id).addEventListener("change", sendSettings);
+function renderThumb(t) {
+  if (!t) return;
+  const img = $("thumb");
+  img.src = t.url;
+  const m = t.meta || {};
+  img.alt = `${m.phone_name || ""} 縮圖`;
+  $("thumbCap").textContent = `${m.phone_name || m.phone || ""}，${fmtTime(m.ts)} 的畫面`;
+  $("mThumbKb").innerHTML = `${Math.round((m.bytes || 0) / 1024)}<small>kB</small>`;
+  const now = Date.now();
+  S.thumbTimes.push(now);
+  S.thumbTimes = S.thumbTimes.filter((x) => now - x < 5000);
+  const rate = (S.thumbTimes.length / 5).toFixed(1);
+  $("thumbRate").textContent = `${rate} 張/秒`;
+  $("mThumb").innerHTML = `${rate}<small>張/秒</small>`;
+  $("thumbwrap").hidden = false; $("thumbEmpty").hidden = true;
+}
+$("plist").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-id]");
+  if (!b) return;
+  b.disabled = true;
+  try {
+    const r = await fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: b.dataset.id }) });
+    renderSelect(await r.json());
+  } catch (err) {
+    $("selmsg").className = "selmsg failed"; $("selmsg").textContent = `沒有送出：${err.message}`;
+    b.disabled = false;
+  }
+});
+
+/* ---------- DVB-S2 數據機 ---------- */
+function setMetric(id, value, cls) {
+  const box = $(id + "Box");
+  if (box) box.className = "metric big" + (cls ? " " + cls : "");
+}
+function renderModem(m, rm) {
+  if (m && m.rx) {
+    const rx = m.rx, tx = m.tx || {};
+    const chips = [];
+    chips.push(rx.lock ? `<span class="tag lock">LOCK</span>` : `<span class="tag unlock">未鎖定</span>`);
+    chips.push(`<span class="tag neutral">${rx.modcod === "DUMMY" ? "DUMMY（對方閒置幀）" : esc(rx.modcod || "—")}</span>`);
+    chips.push(`<span class="tag neutral">${rx.pilots ? "導頻 on" : "無導頻"}</span>`);
+    chips.push(`<span class="tag neutral">FLL ${rx.fll_stage ?? "—"}</span>`);
+    chips.push(`<span class="tag neutral">${rx.freq ? (rx.freq / 1e6).toFixed(1) + " MHz" : ""} · ${rx.rs ? (rx.rs / 1e6).toFixed(3) + " Msym/s" : ""} · 增益 ${rx.gain ?? "—"} dB</span>`);
+    $("dvbChips").innerHTML = chips.join("");
+    const esn0 = rx.esn0_db;
+    $("mEsn0").innerHTML = `${num(esn0)}<small>dB</small>`;
+    $("mEbn0").textContent = rx.ebn0_db != null ? `Eb/N0 ${num(rx.ebn0_db)} dB` : "M2M4 盲估計";
+    setMetric("mEsn0", esn0, esn0 == null ? "" : esn0 >= 10 ? "ok" : esn0 >= 7 ? "warn" : "crit");
+    // 解碼率：最近一個 PLHEADER 是 dummy 時本機算不出容量，改用 Jetson 心跳回報的下行容量
+    const cap = rx.capacity_bps > 0 ? rx.capacity_bps : (rm && rm.tx && rm.tx.capacity_bps) || 0;
+    const pct = cap > 0 ? Math.min(100, 100 * (rx.rate_bps || 0) / cap) : null;
+    $("mRate").innerHTML = `${pct == null ? "—" : pct < 10 ? pct.toFixed(1) : pct.toFixed(0)}<small>%</small>`;
+    $("mRateS").textContent = cap > 0 ? `${((rx.rate_bps || 0) / 1e3).toFixed(0)} / ${(cap / 1e3).toFixed(0)} kbit/s，${num(rx.frames_per_s, 0)} 幀/秒` : "等待對方資料";
+    setMetric("mRate", pct, pct == null ? "" : "ok");
+    const cfo = rx.cfo_hz;
+    $("mCfo").innerHTML = cfo == null ? "—<small>kHz</small>" : Math.abs(cfo) >= 1000 ? `${(cfo / 1000).toFixed(2)}<small>kHz</small>` : `${cfo.toFixed(0)}<small>Hz</small>`;
+    $("mCfoS").textContent = cfo != null && rx.freq ? `${(cfo / rx.freq * 1e6).toFixed(2)} ppm` : "";
+    $("mLevel").innerHTML = `${num(rx.level_dbfs)}<small>dBFS</small>`;
+    $("mLevelS").textContent = rx.level_dbfs != null && rx.level_dbfs > -3 ? "接近飽和，請降 RX 增益" : rx.rssi_db != null ? `RSSI ${num(rx.rssi_db)} dB` : "";
+    const bad = (v) => v ? ' class="bad"' : "";
+    $("dvbKv").innerHTML =
+      `<dt>幀數 / 漏幀</dt><dd${bad(rx.misses)}>${rx.frames ?? "—"} / ${rx.misses ?? "—"}</dd>` +
+      `<dt>LDPC 迭代 / 丟棄</dt><dd>${rx.ldpc_iters ?? "—"} / ${rx.ldpc_drop ?? "—"}</dd>` +
+      `<dt>BCH 失敗 / BB CRC</dt><dd${bad(rx.bch_fail || rx.bb_crc)}>${rx.bch_fail ?? "—"} / ${rx.bb_crc ?? "—"}</dd>` +
+      `<dt>USB 溢位</dt><dd${bad(rx.host_overflow)}>${rx.host_overflow ?? "—"}</dd>` +
+      `<dt>本機 TX</dt><dd>${tx.freq ? (tx.freq / 1e6).toFixed(1) + " MHz" : "—"}，增益 ${tx.gain ?? "—"} dB，幀 ${tx.frames_sent ?? "—"}，dummy ${tx.dummy ?? "—"}</dd>` +
+      `<dt>TX USB 欠載</dt><dd${bad(tx.host_underflow)}>${tx.host_underflow ?? "—"}</dd>`;
+    $("dvbMeta").textContent = `FPGA ${m.fpga ? m.fpga.version : "—"} · ${m.config ? esc(m.config.modcod) + "（本機 TX）" : ""}`;
+  } else {
+    $("dvbChips").innerHTML = `<span class="tag neutral">數據機沒有狀態（鏈路模式不是 fpga 或程式未啟動）</span>`;
+  }
+  // 上行（Jetson 端的接收）＋ TS 層
+  const l = S.link || {};
+  const loc = l.local || {};
+  if (rm && rm.rx) {
+    const r = rm.rx, t = rm.tx || {};
+    $("upChips").innerHTML = (r.lock ? `<span class="tag lock">Jetson 鎖定</span>` : `<span class="tag unlock">Jetson 未鎖定</span>`) +
+      `<span class="tag neutral">${esc(r.modcod || "—")}</span>`;
+    $("mUpEsn0").innerHTML = `${num(r.esn0_db)}<small>dB</small>`;
+    $("mUpCfo").innerHTML = r.cfo_hz == null ? "—<small>kHz</small>" : `${(r.cfo_hz / 1000).toFixed(2)}<small>kHz</small>`;
+    $("mUpS").textContent = `電平 ${num(r.level_dbfs)} dBFS`;
+    $("upKv").innerHTML =
+      `<dt>Jetson 收：漏幀 / CRC</dt><dd${r.misses || r.bb_crc ? ' class="bad"' : ""}>${r.misses ?? "—"} / ${r.bb_crc ?? "—"}</dd>` +
+      `<dt>Jetson 發：幀 / dummy</dt><dd>${t.frames_sent ?? "—"} / ${t.dummy ?? "—"}</dd>` +
+      `<dt>Jetson USB 欠載 / 溢位</dt><dd${t.host_underflow || r.host_overflow ? ' class="bad"' : ""}>${t.host_underflow ?? "—"} / ${r.host_overflow ?? "—"}</dd>` +
+      `<dt>Jetson 下行資料率</dt><dd>${t.rate_bps != null ? (t.rate_bps / 1e3).toFixed(0) + " kbit/s" : "—"}</dd>` +
+      `<dt>地面站收到訊息</dt><dd>${loc.messages ?? 0} 則，CRC 錯 ${loc.crc_errors ?? 0}，掉包 ${loc.cc_errors ?? 0}，重啟 ${loc.restarts ?? 0}</dd>`;
+  } else {
+    $("upChips").innerHTML = `<span class="tag neutral">等待 Jetson 心跳</span>`;
+    $("upKv").innerHTML = `<dt>地面站收到訊息</dt><dd>${loc.messages ?? 0} 則，CRC 錯 ${loc.crc_errors ?? 0}，掉包 ${loc.cc_errors ?? 0}</dd>`;
+  }
+  $("upMeta").textContent = l.hb_age_s != null ? `心跳 ${l.hb_age_s} 秒前` : "";
+}
+
+/* ---------- 頻譜與瀑布圖 ---------- */
+const specCv = $("spec"), wfCv = $("wf");
+function colormap(t) {   // 0..1 -> 深藍 → 藍 → 青 → 黃 → 白
+  t = Math.max(0, Math.min(1, t));
+  const stops = [[8, 12, 40], [30, 60, 160], [20, 170, 220], [240, 220, 60], [255, 255, 255]];
+  const x = t * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(x)), f = x - i;
+  return stops[i].map((a, k) => Math.round(a + (stops[i + 1][k] - a) * f));
+}
+function renderSpectrum(sp) {
+  if (!sp || !sp.db || !sp.db.length) return;
+  const db = sp.db, n = db.length;
+  const lo = Number($("dbMin").value), hi = Number($("dbMax").value);
+  const W = specCv.width, H = specCv.height, ctx = specCv.getContext("2d");
+  ctx.fillStyle = "#06090f"; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = "#1a2638"; ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(W * i / 4, 0); ctx.lineTo(W * i / 4, H); ctx.stroke(); }
+  for (let d = Math.ceil(lo / 20) * 20; d <= hi; d += 20) {
+    const y = H - (d - lo) / (hi - lo) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillStyle = "#5d6b84"; ctx.font = "11px monospace"; ctx.fillText(`${d} dB`, 4, y - 2);
+  }
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const y = H - (Math.max(lo, Math.min(hi, db[i])) - lo) / (hi - lo) * H;
+    i ? ctx.lineTo(i * W / (n - 1), y) : ctx.moveTo(0, y);
+  }
+  ctx.strokeStyle = "#22d3ee"; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+  ctx.fillStyle = "rgba(34,211,238,.12)"; ctx.fill();
+  const fs = sp.fs || 0, fc = sp.fc || 0;
+  $("specAxis").innerHTML = `<span>${(fc / 1e6 - fs / 2e6).toFixed(2)} MHz</span><span>−fs/4</span><span>fc ${(fc / 1e6).toFixed(3)} MHz</span><span>+fs/4</span><span>${(fc / 1e6 + fs / 2e6).toFixed(2)} MHz</span>`;
+  let mx = -1e9; for (const v of db) if (v > mx) mx = v;
+  $("specInfo").textContent = `峰值 ${mx.toFixed(1)} dBFS，fs ${(fs / 1e6).toFixed(3)} MS/s`;
+  // 瀑布：整張往下移一列，新的一列畫在最上面
+  const wctx = wfCv.getContext("2d"), WW = wfCv.width, WH = wfCv.height;
+  wctx.drawImage(wfCv, 0, 0, WW, WH - 1, 0, 1, WW, WH - 1);
+  const row = wctx.createImageData(WW, 1);
+  for (let x = 0; x < WW; x++) {
+    const v = db[Math.floor(x * n / WW)];
+    const [r, g, b] = colormap((v - lo) / (hi - lo));
+    row.data[x * 4] = r; row.data[x * 4 + 1] = g; row.data[x * 4 + 2] = b; row.data[x * 4 + 3] = 255;
+  }
+  wctx.putImageData(row, 0, 0);
+  $("wfInfo").textContent = `${lo} ~ ${hi} dB`;
+}
+(function initWf() { const c = wfCv.getContext("2d"); c.fillStyle = "#06090f"; c.fillRect(0, 0, wfCv.width, wfCv.height); })();
+
+/* ---------- 鏈路 ---------- */
+function renderLink(l) {
+  S.link = l;
+  const el = $("link"), txt = $("linkText");
+  if (!l) return;
+  S.phones = l.phones || []; S.selected = l.selected || null;
+  if (l.settings && Object.keys(l.settings).length) S.settings = l.settings;
+  renderPhones(); renderSettings();
+  const j = l.jetson || {};
+  if (l.up) {
+    el.dataset.state = "up";
+    let s = `${esc(j.node_name || j.node || "Jetson")} 連線中，${l.hb_age_s ?? "?"} 秒前收到心跳`;
+    if (j.cam_ok === false) s += `<span class="link-warn">，手機沒有畫面</span>`;
+    if (j.yolo_state === "error") s += `<span class="link-warn">，YOLO 沒有載入</span>`;
+    else if (j.last_error) s += `<span class="link-warn">，${esc(j.last_error)}</span>`;
+    txt.innerHTML = s;
+  } else if (l.hb_age_s != null) {
+    el.dataset.state = "down";
+    txt.textContent = `鏈路中斷，最後心跳 ${Math.round(l.hb_age_s)} 秒前`;
+  } else {
+    el.dataset.state = "wait";
+    const st = l.local && l.local.state;
+    txt.textContent = st === "error" ? "本機 DVB-S2 程式無法啟動，請看 logs/" : "等待 Jetson 心跳";
+  }
+  renderModem(l.modem, l.remote_modem);
+}
+
+/* ---------- 通知 ---------- */
+function noteState(n) {
+  if (n.state === "delivered") return [`已送達，Jetson ${fmtTime(n.ack_ts)} 顯示`, "delivered"];
+  if (n.state === "failed") return ["沒有收到 Jetson 確認，請檢查鏈路後重送", "failed"];
+  return [n.tries > 1 ? `傳送中，第 ${n.tries} 次` : "傳送中", ""];
+}
+function renderNotes() {
+  const items = [...S.notes.values()].sort((a, b) => b.id - a.id).slice(0, 50);
+  $("nlist").innerHTML = items.map((n) => {
+    const [s, cls] = noteState(n);
+    return `<li><div class="ntext">${esc(n.text)}</div><div class="nstate ${cls}">${fmtTime(n.created_ts)} 送出，${s}</div></li>`;
+  }).join("");
+}
+$("ntext").addEventListener("input", () => { $("ncount").textContent = `${$("ntext").value.length} / 200`; });
+$("ntext").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("nform").requestSubmit(); });
+$("nform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("ntext").value.trim();
+  $("nerr").textContent = "";
+  if (!text) { $("nerr").textContent = "請先輸入通知內容。"; return; }
+  $("nsend").disabled = true;
+  try {
+    const r = await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    S.notes.set(j.id, j); renderNotes();
+    $("ntext").value = ""; $("ncount").textContent = "0 / 200";
+  } catch (err) {
+    $("nerr").textContent = `沒有送出：${err.message}`;
+  } finally {
+    $("nsend").disabled = false;
+  }
+});
+
+/* ---------- WebSocket ---------- */
+let retry = 1000;
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onopen = () => { $("offline").hidden = true; retry = 1000; };
+  ws.onclose = () => { $("offline").hidden = false; setTimeout(connect, retry); retry = Math.min(retry * 2, 10000); };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "hello") {
+      S.reports = m.reports; S.interval = m.interval_s || 5; S.ackId = m.ack_id || 0; S.clearTs = m.clear_ts || "";
+      S.notes = new Map(m.notifications.map((n) => [n.id, n]));
+      renderRows(); renderStrip(); renderNow(S.reports[0], false);
+      showEvidence(S.reports.find((r) => r.status === "critical" && r.image_url && visible(r)));
+      renderNotes(); renderLink(m.link); renderSelect(m.select); renderThumb(m.thumb); renderSpectrum(m.spectrum);
+    } else if (m.type === "report") {
+      S.reports.unshift(m.report);
+      if (S.reports.length > 3000) S.reports.length = 3000;
+      renderNow(m.report, true);
+      if (m.report.status === "critical") showEvidence(m.report);
+      prependRow(m.report); renderStrip(); renderPhones();
+    } else if (m.type === "notify") {
+      if (m.notify) { S.notes.set(m.notify.id, m.notify); renderNotes(); }
+    } else if (m.type === "link") {
+      renderLink(m.link);
+      if (m.select) renderSelect(m.select);
+    } else if (m.type === "select") {
+      renderSelect(m.select);
+    } else if (m.type === "thumb") {
+      renderThumb(m.thumb);
+    } else if (m.type === "spectrum") {
+      renderSpectrum(m.spectrum);
+    } else if (m.type === "ack") {
+      S.ackId = m.ack_id || 0; S.clearTs = m.clear_ts || ""; renderNow(S.reports[0], false); hideEvidence(); renderStrip(); renderPhones();
+    }
+  };
+}
+connect();
+setInterval(renderStrip, 5000);
+</script>
+</body>
+</html>

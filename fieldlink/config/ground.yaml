@@ -1,0 +1,75 @@
+# ===== 地面站（電腦）設定 =====
+
+web:
+  host: 0.0.0.0
+  port: 8080
+
+storage:
+  db: data/ground/fieldlink.db
+  images: data/ground/images
+
+expected_interval_s: 5      # Jetson 截圖週期，只用於儀表板時間軸
+heartbeat_timeout_s: 8      # 超過這麼久沒收到心跳就記錄「鏈路中斷」
+
+notify:
+  retry_s: 6                # 沒收到 ACK 就重送
+  max_tries: 5
+
+select:                     # 選手機（SELECT）沒收到 ACK 的重送
+  retry_s: 3
+  max_tries: 10
+
+link:
+  mode: fpga                # fpga | udp | dvbs2 | loopback
+  pid: 0x100
+  log_dir: logs
+  fpga:                     # FPGA 數據機（dvb-s2-sdr 專案的 dvbs2_b210 + 自製 B210 image）
+    program: /home/lab602/dvb-s2-sdr/b210/host/build/dvbs2_b210
+    image: /home/lab602/dvb-s2-sdr/b210/out/usrp_b210_dvbs2_fpga.bin
+    args: ""
+    tx_freq: 1050000000     # 上行 地面站 → Jetson（= jetson.yaml 的 rx_freq）
+    rx_freq: 1000000000     # 下行 Jetson → 地面站（= jetson.yaml 的 tx_freq）
+    bw: 2000000
+    rolloff: 35
+    modcod: 4               # 上行 QPSK 1/2：指令量小，用最穩的；實測 8PSK 2/3 在這方向餘裕不足
+    tx_gain: 80
+    rx_gain: 40
+    udp_in: 5000
+    udp_out: 6000
+    rate_kbps: 1100
+  udp:
+    listen: 0.0.0.0:47000
+    peer: 10.42.0.1:47001   # Jetson 的 IP
+    rate_kbps: 800
+  dvbs2:
+    tx_cmd: dvbs2-tx
+    rx_cmd: dvbs2-rx
+    radio_python: /usr/bin/python3   # 執行 dvbs2-tx/rx 的 Python（要有 apt 裝的 GNU Radio）
+    bridge_python: /usr/bin/python3
+    samp_rate: 2000000
+    usrp:
+      args: "type=b200"
+      tx_antenna: TX/RX
+      rx_antenna: RX2
+      otw_format: sc16
+    tx:                     # 上行：地面站 → Jetson（頻率要等於 jetson.yaml 的 rx.freq）
+      freq: 1100000000
+      gain: 50
+      sym_rate: 500000
+      modcod: qpsk1/2
+      frame_size: normal
+      rolloff: 0.2
+      pilots: true
+      fullscale: 0.8
+    rx:                     # 下行：Jetson → 地面站（頻率要等於 jetson.yaml 的 tx.freq）
+      freq: 1000000000
+      gain: 40
+      sym_rate: 500000
+      modcod: qpsk1/2
+      frame_size: normal
+      rolloff: 0.2
+      pilots: true
+      ldpc_iterations: 25
+    loopback:
+      snr: 10
+      freq_offset: 10000

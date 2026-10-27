@@ -1,0 +1,185 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="950" viewBox="0 0 1500 950" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, sans-serif" font-size="14">
+  <defs>
+    <marker id="ar" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <marker id="arO" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d9480f"/>
+    </marker>
+    <marker id="arB" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1c64f2"/>
+    </marker>
+  </defs>
+  <rect width="1500" height="960" fill="#ffffff"/>
+  <text x="750" y="38" text-anchor="middle" font-size="24" font-weight="700" fill="#111">場域災害偵測系統 架構圖（Nano 端 ／ PC 端）</text>
+
+  <!-- ===================== Nano side ===================== -->
+  <rect x="30" y="60" width="620" height="870" rx="12" fill="#eef4ff" stroke="#1c64f2" stroke-width="2"/>
+  <text x="340" y="90" text-anchor="middle" font-size="20" font-weight="700" fill="#1c64f2">Nano 端（現場節點）</text>
+
+  <!-- phones -->
+  <g font-size="13">
+    <rect x="60" y="108" width="170" height="44" rx="8" fill="#fff" stroke="#1c64f2"/>
+    <text x="145" y="127" text-anchor="middle" font-weight="600">手機 1（瀏覽器相機頁）</text>
+    <text x="145" y="144" text-anchor="middle" fill="#555">約 4 張/秒 JPEG</text>
+    <rect x="255" y="108" width="170" height="44" rx="8" fill="#fff" stroke="#1c64f2"/>
+    <text x="340" y="127" text-anchor="middle" font-weight="600">手機 2</text>
+    <text x="340" y="144" text-anchor="middle" fill="#555">輸入名稱、固定 id</text>
+    <rect x="450" y="108" width="170" height="44" rx="8" fill="#fff" stroke="#1c64f2"/>
+    <text x="535" y="127" text-anchor="middle" font-weight="600">手機 N</text>
+    <text x="535" y="144" text-anchor="middle" fill="#555">不用裝 App</text>
+  </g>
+  <line x1="145" y1="152" x2="145" y2="180" stroke="#333" marker-end="url(#ar)"/>
+  <line x1="340" y1="152" x2="340" y2="180" stroke="#333" marker-end="url(#ar)"/>
+  <line x1="535" y1="152" x2="535" y2="180" stroke="#333" marker-end="url(#ar)"/>
+  <rect x="60" y="182" width="560" height="34" rx="8" fill="#dbe7ff" stroke="#1c64f2"/>
+  <text x="340" y="204" text-anchor="middle" font-weight="600">Wi-Fi 熱點 JetsonCam（5 GHz）→ https://10.42.0.1:8443/camera</text>
+  <line x1="340" y1="216" x2="340" y2="240" stroke="#333" marker-end="url(#ar)"/>
+
+  <!-- Jetson box -->
+  <rect x="50" y="242" width="580" height="356" rx="10" fill="#ffffff" stroke="#1c64f2" stroke-width="1.5"/>
+  <text x="340" y="266" text-anchor="middle" font-weight="700" fill="#1c64f2">Jetson Orin Nano 8 GB · JetPack 7.2.1 · fieldlink  jetson/app.py</text>
+
+  <g font-size="12.5">
+    <rect x="68" y="280" width="260" height="54" rx="6" fill="#f5f8ff" stroke="#8aa8e8"/>
+    <text x="198" y="300" text-anchor="middle" font-weight="600">HTTPS 網頁伺服器（aiohttp, 8443）</text>
+    <text x="198" y="318" text-anchor="middle" fill="#444">/camera 收影格　/monitor 監控頁　/api/select</text>
+    <rect x="348" y="280" width="264" height="54" rx="6" fill="#f5f8ff" stroke="#8aa8e8"/>
+    <text x="480" y="300" text-anchor="middle" font-weight="600">手機登記簿（jetson/camera.py）</text>
+    <text x="480" y="318" text-anchor="middle" fill="#444">每支最新影格 · 每 5 秒輪流取最久沒辨識的</text>
+
+    <line x1="340" y1="334" x2="340" y2="356" stroke="#333" marker-end="url(#ar)"/>
+
+    <rect x="68" y="358" width="170" height="60" rx="6" fill="#fff7ed" stroke="#f59e0b"/>
+    <text x="153" y="379" text-anchor="middle" font-weight="600">① YOLO26s</text>
+    <text x="153" y="396" text-anchor="middle" fill="#444">TensorRT FP16（GPU）</text>
+    <text x="153" y="411" text-anchor="middle" fill="#444">物件、位置，數十 ms</text>
+    <rect x="256" y="358" width="190" height="60" rx="6" fill="#fff7ed" stroke="#f59e0b"/>
+    <text x="351" y="379" text-anchor="middle" font-weight="600">② Qwen3-VL 2B（Ollama, GPU）</text>
+    <text x="351" y="396" text-anchor="middle" fill="#444">看圖＋YOLO 清單 → 描述＋等級</text>
+    <text x="351" y="411" text-anchor="middle" fill="#444">約 5 秒/張（448 px）</text>
+    <rect x="464" y="358" width="148" height="60" rx="6" fill="#fff7ed" stroke="#f59e0b"/>
+    <text x="538" y="379" text-anchor="middle" font-weight="600">③ 融合</text>
+    <text x="538" y="396" text-anchor="middle" fill="#444">max(VLM, YOLO 規則)</text>
+    <text x="538" y="411" text-anchor="middle" fill="#444">一般／警告／嚴重</text>
+    <line x1="238" y1="388" x2="256" y2="388" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="446" y1="388" x2="464" y2="388" stroke="#333" marker-end="url(#ar)"/>
+
+    <line x1="340" y1="418" x2="340" y2="440" stroke="#333" marker-end="url(#ar)"/>
+    <rect x="68" y="442" width="544" height="56" rx="6" fill="#f5f8ff" stroke="#8aa8e8"/>
+    <text x="340" y="462" text-anchor="middle" font-weight="600">送：REPORT（報告，嚴重附影像）· THUMB（縮圖）· HEARTBEAT（手機清單、設定、接收品質）</text>
+    <text x="340" y="482" text-anchor="middle" fill="#444">收：SELECT（選手機 / detect / 設定）· NOTIFY（通知）→ 回 ACK　·　MPEG-TS 分段＋CRC32</text>
+
+    <line x1="340" y1="498" x2="340" y2="520" stroke="#333" marker-end="url(#ar)"/>
+    <rect x="68" y="522" width="544" height="30" rx="6" fill="#f5f8ff" stroke="#8aa8e8"/>
+    <text x="340" y="542" text-anchor="middle" font-weight="600">鏈路層 common/link.py（fpga 模式）⇄ 本機 UDP：5000 送 · 6000 收 · 6001 數據機狀態/頻譜</text>
+    <text x="340" y="582" text-anchor="middle" fill="#555" font-size="12">資源：Ollama 約 5 GB、程式＋TensorRT 約 0.7 GB，記憶體是主要限制；GPU 僅推論時滿載</text>
+  </g>
+
+  <line x1="340" y1="598" x2="340" y2="620" stroke="#333" marker-end="url(#ar)"/>
+  <rect x="50" y="622" width="580" height="48" rx="8" fill="#fff" stroke="#1c64f2"/>
+  <text x="340" y="642" text-anchor="middle" font-weight="600">dvbs2_b210（dvb-s2-sdr，UHD 4.6）</text>
+  <text x="340" y="660" text-anchor="middle" fill="#444" font-size="12.5">每個 UDP 封包各自成框（CRC）· 沒資料送 dummy 幀 · --status-udp 每秒輸出狀態與 1024 點頻譜</text>
+
+  <line x1="340" y1="670" x2="340" y2="692" stroke="#333" marker-end="url(#ar)"/>
+  <text x="352" y="686" fill="#555" font-size="12">USB 3</text>
+  <rect x="50" y="694" width="580" height="92" rx="8" fill="#fff" stroke="#1c64f2"/>
+  <text x="340" y="716" text-anchor="middle" font-weight="700">USRP B210（NI USRP-2901 #32B8759）</text>
+  <text x="340" y="736" text-anchor="middle" fill="#444" font-size="12.5">FPGA（Spartan-6 LX150）內的 DVB-S2 數據機 — TX：BCH、LDPC、PL 成幀＋導頻、RRC</text>
+  <text x="340" y="754" text-anchor="middle" fill="#444" font-size="12.5">RX：AGC、定時恢復、幀同步、FLL/PLL、LDPC/BCH 解碼 · AD9364 射頻 70 MHz–6 GHz</text>
+  <text x="340" y="774" text-anchor="middle" fill="#444" font-size="12.5">2 MHz 頻寬 · Rs 1.48 Msym/s · roll-off 0.35 · 短幀 · 導頻</text>
+
+  <rect x="50" y="810" width="275" height="56" rx="8" fill="#fff3e8" stroke="#d9480f"/>
+  <text x="187" y="832" text-anchor="middle" font-weight="600" fill="#d9480f">TX/RX A 天線 → 發射</text>
+  <text x="187" y="852" text-anchor="middle" fill="#444" font-size="12.5">1000 MHz · 8PSK 2/3 · 增益 70 dB</text>
+  <rect x="355" y="810" width="275" height="56" rx="8" fill="#e8f1ff" stroke="#1c64f2"/>
+  <text x="492" y="832" text-anchor="middle" font-weight="600" fill="#1c64f2">RX2 A 天線 ← 接收</text>
+  <text x="492" y="852" text-anchor="middle" fill="#444" font-size="12.5">1050 MHz · 增益 40 dB（FPGA AGC）</text>
+  <line x1="187" y1="786" x2="187" y2="810" stroke="#333"/>
+  <line x1="492" y1="786" x2="492" y2="810" stroke="#333"/>
+  <text x="340" y="905" text-anchor="middle" fill="#555" font-size="12">操作：SSH（USB-C 192.168.55.1 / 熱點 10.42.0.1）或螢幕鍵盤 · tools/restart_jetson.sh · logs/</text>
+
+  <!-- ===================== PC side ===================== -->
+  <rect x="850" y="60" width="620" height="870" rx="12" fill="#eefbf1" stroke="#1a7f4b" stroke-width="2"/>
+  <text x="1160" y="90" text-anchor="middle" font-size="20" font-weight="700" fill="#1a7f4b">PC 端（地面站）</text>
+
+  <!-- dashboard -->
+  <rect x="870" y="108" width="580" height="124" rx="8" fill="#fff" stroke="#1a7f4b"/>
+  <text x="1160" y="130" text-anchor="middle" font-weight="700">瀏覽器儀表板 http://localhost:8080（ground/static/index.html）</text>
+  <g font-size="12.5" fill="#444">
+    <text x="1160" y="150" text-anchor="middle">狀態橫幅 · 目前狀態 · 手機清單 · 即時縮圖 · 最近 30 分鐘時間軸 · 嚴重事件影像 · 辨識紀錄／CSV</text>
+    <text x="1160" y="168" text-anchor="middle">DVB-S2 接收面板：LOCK/MODCOD、Es/N0、解碼率、頻偏、電平、頻譜圖、瀑布圖 · 鏈路與上行狀態</text>
+  </g>
+  <rect x="890" y="182" width="540" height="36" rx="6" fill="#ffeeda" stroke="#d9480f"/>
+  <text x="1160" y="205" text-anchor="middle" font-weight="600" fill="#d9480f">操作：開始/停止偵測 · 選手機 · 縮圖/VLM 設定 · 清空 · 送通知 →（上行，有 ACK 重送）</text>
+  <line x1="1160" y1="232" x2="1160" y2="242" stroke="#333"/>
+  <text x="1175" y="241" fill="#555" font-size="12">WebSocket / REST</text>
+  <line x1="1160" y1="232" x2="1160" y2="258" stroke="#333" marker-end="url(#ar)"/>
+
+  <!-- ground app -->
+  <rect x="870" y="260" width="580" height="338" rx="10" fill="#ffffff" stroke="#1a7f4b" stroke-width="1.5"/>
+  <text x="1160" y="284" text-anchor="middle" font-weight="700" fill="#1a7f4b">筆電 Ubuntu 24.04 · fieldlink  ground/app.py（aiohttp, 8080）· 不做 AI</text>
+  <g font-size="12.5">
+    <rect x="888" y="298" width="544" height="54" rx="6" fill="#f3fbf5" stroke="#86c7a0"/>
+    <text x="1160" y="318" text-anchor="middle" font-weight="600">接收：HEARTBEAT（鏈路/手機/設定/Jetson 接收品質）· REPORT · THUMB · ACK</text>
+    <text x="1160" y="336" text-anchor="middle" fill="#444">心跳 8 秒沒來 → 鏈路中斷事件；嚴重事件重送兩次 → 以 (node, boot, seq) 去重</text>
+    <rect x="888" y="362" width="264" height="74" rx="6" fill="#f3fbf5" stroke="#86c7a0"/>
+    <text x="1020" y="382" text-anchor="middle" font-weight="600">保存（ground/storage.py）</text>
+    <text x="1020" y="400" text-anchor="middle" fill="#444">SQLite data/ground/fieldlink.db</text>
+    <text x="1020" y="416" text-anchor="middle" fill="#444">影像存檔 · CSV 匯出 · 清空(ack)狀態</text>
+    <rect x="1168" y="362" width="264" height="74" rx="6" fill="#f3fbf5" stroke="#86c7a0"/>
+    <text x="1300" y="382" text-anchor="middle" font-weight="600">發送（上行指令）</text>
+    <text x="1300" y="400" text-anchor="middle" fill="#444">SELECT：選手機／detect／縮圖與 VLM 設定</text>
+    <text x="1300" y="416" text-anchor="middle" fill="#444">NOTIFY：文字通知 · 沒收到 ACK 自動重送</text>
+    <rect x="888" y="446" width="544" height="48" rx="6" fill="#f3fbf5" stroke="#86c7a0"/>
+    <text x="1160" y="466" text-anchor="middle" font-weight="600">WebSocket 推播給儀表板：報告、鏈路、縮圖（每秒 1–3 張）、頻譜（每秒 1 次）、選擇狀態</text>
+    <text x="1160" y="484" text-anchor="middle" fill="#444">MPEG-TS 分段重組＋CRC32（common/ts.py）</text>
+    <rect x="888" y="504" width="544" height="30" rx="6" fill="#f3fbf5" stroke="#86c7a0"/>
+    <text x="1160" y="524" text-anchor="middle" font-weight="600">鏈路層 common/link.py（fpga 模式）⇄ 本機 UDP：5000 送 · 6000 收 · 6001 數據機狀態/頻譜</text>
+    <text x="1160" y="566" text-anchor="middle" fill="#555" font-size="12">tools/restart_ground.sh · stop_ground.sh · logs/ground_app.log · logs/dvbs2_b210.log</text>
+    <text x="1160" y="586" text-anchor="middle" fill="#555" font-size="12">多台 Jetson：每台配一台地面站 USRP、各用自己的頻率對（node_id 區分）</text>
+  </g>
+
+  <line x1="1160" y1="598" x2="1160" y2="620" stroke="#333" marker-end="url(#ar)"/>
+  <rect x="870" y="622" width="580" height="48" rx="8" fill="#fff" stroke="#1a7f4b"/>
+  <text x="1160" y="642" text-anchor="middle" font-weight="600">dvbs2_b210（dvb-s2-sdr，UHD 4.9）</text>
+  <text x="1160" y="660" text-anchor="middle" fill="#444" font-size="12.5">同一支程式、同一顆 FPGA image；--status-udp 供儀表板的頻譜與 Es/N0</text>
+
+  <line x1="1160" y1="670" x2="1160" y2="692" stroke="#333" marker-end="url(#ar)"/>
+  <text x="1172" y="686" fill="#555" font-size="12">USB 3</text>
+  <rect x="870" y="694" width="580" height="92" rx="8" fill="#fff" stroke="#1a7f4b"/>
+  <text x="1160" y="716" text-anchor="middle" font-weight="700">USRP B210（NI USRP-2901 #30FB57D）</text>
+  <text x="1160" y="736" text-anchor="middle" fill="#444" font-size="12.5">FPGA 內的 DVB-S2 數據機（與 Nano 端相同 image）</text>
+  <text x="1160" y="754" text-anchor="middle" fill="#444" font-size="12.5">TX：QPSK 1/2（指令量小，最穩）· RX：自動解出對方 MODCOD</text>
+  <text x="1160" y="774" text-anchor="middle" fill="#444" font-size="12.5">2 MHz 頻寬 · Rs 1.48 Msym/s · roll-off 0.35</text>
+
+  <rect x="870" y="810" width="275" height="56" rx="8" fill="#e8f1ff" stroke="#1c64f2"/>
+  <text x="1007" y="832" text-anchor="middle" font-weight="600" fill="#1c64f2">RX2 A 天線 ← 接收</text>
+  <text x="1007" y="852" text-anchor="middle" fill="#444" font-size="12.5">1000 MHz · 增益 40 dB</text>
+  <rect x="1175" y="810" width="275" height="56" rx="8" fill="#fff3e8" stroke="#d9480f"/>
+  <text x="1312" y="832" text-anchor="middle" font-weight="600" fill="#d9480f">TX/RX A 天線 → 發射</text>
+  <text x="1312" y="852" text-anchor="middle" fill="#444" font-size="12.5">1050 MHz · QPSK 1/2 · 增益 80 dB</text>
+  <line x1="1007" y1="786" x2="1007" y2="810" stroke="#333"/>
+  <line x1="1312" y1="786" x2="1312" y2="810" stroke="#333"/>
+  <text x="1160" y="905" text-anchor="middle" fill="#555" font-size="12.5">實測：同一房間 Es/N0 約 19 dB、零錯誤；截圖到顯示約 6–8 秒（VLM）、縮圖 0.1–0.3 秒</text>
+
+  <!-- ===================== RF link between the panels ===================== -->
+  <rect x="650" y="620" width="200" height="160" rx="8" fill="#fffbe6" stroke="#d9480f" stroke-dasharray="4 3"/>
+  <text x="750" y="642" text-anchor="middle" font-weight="700" fill="#d9480f">DVB-S2 無線鏈路（全雙工）</text>
+  <text x="750" y="666" text-anchor="middle" font-size="12.5" fill="#d9480f" font-weight="600">下行 1000 MHz · 8PSK 2/3</text>
+  <text x="750" y="684" text-anchor="middle" font-size="12" fill="#444">約 2.5 Mbit/s：報告、縮圖、</text>
+  <text x="750" y="700" text-anchor="middle" font-size="12" fill="#444">嚴重影像、心跳</text>
+  <text x="750" y="726" text-anchor="middle" font-size="12.5" fill="#1c64f2" font-weight="600">上行 1050 MHz · QPSK 1/2</text>
+  <text x="750" y="744" text-anchor="middle" font-size="12" fill="#444">約 1.2 Mbit/s：指令、設定、</text>
+  <text x="750" y="760" text-anchor="middle" font-size="12" fill="#444">通知（ACK 重送）</text>
+  <line x1="652" y1="822" x2="846" y2="822" stroke="#d9480f" stroke-width="3" marker-end="url(#arO)"/>
+  <text x="750" y="812" text-anchor="middle" font-size="12.5" fill="#d9480f" font-weight="600">下行 →（Nano 發、PC 收）</text>
+  <line x1="848" y1="856" x2="654" y2="856" stroke="#1c64f2" stroke-width="3" marker-end="url(#arB)"/>
+  <text x="750" y="876" text-anchor="middle" font-size="12.5" fill="#1c64f2" font-weight="600">← 上行（PC 發、Nano 收）</text>
+
+  <!-- maintenance link -->
+  <path d="M652,250 L848,250" stroke="#777" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="750" y="238" text-anchor="middle" font-size="12" fill="#666">維護用 SSH（選用）</text>
+  <text x="750" y="266" text-anchor="middle" font-size="11.5" fill="#666">USB-C 192.168.55.1 / 熱點 10.42.0.1</text>
+  <text x="750" y="282" text-anchor="middle" font-size="11.5" fill="#666">正式運作不需要</text>
+</svg>

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jetson 監控畫面</title>
+<style>
+:root {
+  --bg: #E7ECF0; --surface: #FFFFFF; --ink: #17212B; --muted: #586776; --line: #C9D2DA;
+  --accent: #2A55A3; --ok: #23795A; --warn: #A9740A; --crit: #BE3527;
+  --font: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0F161D; --surface: #17212B; --ink: #DCE4EB; --muted: #8D9BA8; --line: #2A3946;
+          --accent: #86A9E6; --ok: #4DB38A; --warn: #E0AC3C; --crit: #EE6C5C; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.6 var(--font); font-variant-numeric: tabular-nums;
+  display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: 1px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.live { background: #000; display: flex; align-items: center; justify-content: center; position: relative; min-height: 50vh; }
+.live img { max-width: 100%; max-height: 100vh; display: block; }
+.live .nofeed { color: #93A1AE; text-align: center; padding: 24px; }
+.live .cap { position: absolute; left: 12px; top: 12px; background: rgba(0,0,0,.55); color: #fff; padding: 4px 10px; border-radius: 999px; font-size: 13px; }
+.side { background: var(--surface); padding: 24px; display: flex; flex-direction: column; gap: 24px; overflow-y: auto; max-height: 100vh; }
+h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; color: var(--muted); }
+.status { font-size: 40px; font-weight: 700; letter-spacing: .08em; line-height: 1.1; color: var(--muted); }
+.status.normal { color: var(--ok); } .status.warning { color: var(--warn); } .status.critical { color: var(--crit); }
+.desc { font-size: 20px; margin: 8px 0 4px; }
+.meta { color: var(--muted); font-size: 14px; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
+dt { color: var(--muted); } dd { margin: 0; }
+.bad { color: var(--crit); }
+ul { list-style: none; padding: 0; margin: 0; }
+li { padding: 10px 0; border-top: 1px solid var(--line); }
+li .t { color: var(--muted); font-size: 13px; }
+.phone { display: flex; align-items: center; gap: 10px; }
+.phone .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); flex: none; }
+.phone[data-fresh="1"] .dot { background: var(--ok); }
+.phone[data-online="1"]:not([data-fresh="1"]) .dot { background: var(--warn); }
+.phone .n { font-weight: 600; }
+.phone .s { color: var(--muted); font-size: 13px; }
+.phone button { margin-left: auto; font: inherit; font-size: 13px; border: 1px solid var(--line); background: transparent;
+  color: var(--accent); border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+.phone[data-selected="1"] button { background: var(--accent); color: #fff; border-color: var(--accent); }
+.overlay { position: fixed; inset: 0; background: rgba(10, 16, 22, .72); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 5; }
+.card { background: var(--surface); max-width: 720px; width: 100%; border-top: 10px solid var(--accent); padding: 28px 32px; }
+.card h2 { color: var(--accent); font-size: 18px; }
+.card p { font-size: 32px; font-weight: 700; line-height: 1.4; margin: 8px 0 24px; overflow-wrap: anywhere; }
+.card button { font: inherit; font-size: 18px; border: 0; padding: 10px 28px; background: var(--accent); color: #fff; cursor: pointer; }
+@media (max-width: 900px) { body { grid-template-columns: 1fr; } .side { max-height: none; } }
+</style>
+</head>
+<body>
+<div class="live">
+  <img id="feed" alt="手機即時影像" hidden>
+  <div class="cap" id="cap" hidden></div>
+  <div class="nofeed" id="nofeed">還沒有影像。用手機連上 Jetson 熱點，開啟 https://10.42.0.1:8443/camera</div>
+</div>
+<aside class="side">
+  <section aria-live="polite">
+    <h2>最新辨識</h2>
+    <div class="status" id="status">待命</div>
+    <p class="desc" id="desc">等待第一張截圖。</p>
+    <div class="meta" id="meta"></div>
+  </section>
+  <section>
+    <h2>手機（地面站選中的那支會回傳縮圖）</h2>
+    <ul id="phones"><li class="t">尚無手機連線</li></ul>
+  </section>
+  <section>
+    <h2>系統</h2>
+    <dl>
+      <dt>節點</dt><dd id="node">—</dd>
+      <dt>相機</dt><dd id="cam">—</dd>
+      <dt>YOLO</dt><dd id="yolo">—</dd>
+      <dt>VLM</dt><dd id="vlm">—</dd>
+      <dt>DVB-S2</dt><dd id="link">—</dd>
+      <dt>已回傳</dt><dd id="sent">—</dd>
+      <dt>偵測</dt><dd id="detect">—</dd>
+      <dt>縮圖／VLM</dt><dd id="settings">—</dd>
+    </dl>
+  </section>
+  <section>
+    <h2>地面站通知</h2>
+    <ul id="notes"><li class="t">尚無通知</li></ul>
+  </section>
+</aside>
+<div class="overlay" id="overlay" hidden>
+  <div class="card" role="alertdialog" aria-labelledby="ovTitle">
+    <h2 id="ovTitle">地面站通知</h2>
+    <p id="ovText"></p>
+    <button type="button" id="ovOk">知道了</button>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const LABEL = { normal: "一般", warning: "警告", critical: "嚴重" };
+const LINK = { running: "運作中", restarting: "重新啟動中", error: "無法啟動", stopped: "已停止" };
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const tm = (iso) => new Date(iso).toLocaleTimeString("zh-TW", { hour12: false });
+let notes = [], selected = null, phones = [];
+
+// 即時畫面（被選中的手機）：前一張載入完才抓下一張，不會堆積請求
+function pull() {
+  const img = new Image();
+  img.onload = () => { $("feed").src = img.src; $("feed").hidden = false; $("nofeed").hidden = true; setTimeout(pull, 250); };
+  img.onerror = () => { setTimeout(pull, 1000); };
+  img.src = "/api/frame.jpg?t=" + Date.now() + (selected ? "&phone=" + encodeURIComponent(selected) : "");
+}
+pull();
+
+function showResult(r) {
+  if (!r) return;
+  $("status").className = "status " + r.status;
+  $("status").textContent = LABEL[r.status];
+  $("desc").textContent = (r.phone_name ? `【${r.phone_name}】` : "") + r.text;
+  const d = (r.detections || []).map((a) => `${a.cls}×${a.n}`).join("、") || "沒有偵測到物件";
+  const v = r.latency_ms != null ? `VLM ${(r.latency_ms / 1000).toFixed(1)} 秒` : "VLM 無回應";
+  $("meta").textContent = `${tm(r.ts)} 截圖，${v}` + (r.yolo_model ? `，YOLO：${d}` : "") +
+    (r.escalated_by ? `。YOLO 規則升級：${(r.reasons || []).join("；")}` : "");
+}
+function renderPhones() {
+  if (!phones.length) { $("phones").innerHTML = '<li class="t">尚無手機連線</li>'; return; }
+  $("phones").innerHTML = phones.map((p) => {
+    const s = p.fresh ? "有畫面" : p.online ? `已連線，${p.age_s == null ? "尚無" : p.age_s + " 秒前有"}畫面` : "離線";
+    return `<li class="phone" data-fresh="${p.fresh ? 1 : 0}" data-online="${p.online ? 1 : 0}" data-selected="${p.selected ? 1 : 0}">` +
+      `<span class="dot"></span><span><span class="n">${esc(p.name)}</span> <span class="s">${s}，已辨識 ${p.reports} 次</span></span>` +
+      `<button type="button" data-id="${esc(p.id)}">${p.selected ? "選中" : "選這支"}</button></li>`;
+  }).join("");
+}
+$("phones").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-id]");
+  if (!b) return;
+  await fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: b.dataset.id }) });
+});
+function showState(s) {
+  phones = s.phones || []; selected = s.selected || null;
+  renderPhones();
+  const selPh = phones.find((p) => p.id === selected);
+  $("cap").hidden = !selPh; if (selPh) $("cap").textContent = `地面站選中：${selPh.name}`;
+  $("node").textContent = `${s.node_name || ""}（${s.node || ""}）`;
+  const fresh = phones.filter((p) => p.fresh).length;
+  $("cam").innerHTML = fresh ? `${fresh} 支手機有畫面` : `<span class="bad">沒有畫面</span>`;
+  const YS = { ready: "", loading: "，載入中（第一次會匯出 TensorRT，需數分鐘）", error: "，載入失敗，目前只用 VLM", disabled: "未啟用" };
+  $("yolo").innerHTML = s.yolo_state === "error" ? `<span class="bad">${esc(s.yolo_model || "YOLO")}${YS.error}</span>`
+    : s.yolo_state === "disabled" ? YS.disabled : esc(s.yolo_model || "YOLO") + (YS[s.yolo_state] || "");
+  $("vlm").innerHTML = esc(s.vlm_model) + (s.vlm_busy ? "，推論中" : "") + (s.last_error ? `<br><span class="bad">${esc(s.last_error)}</span>` : "");
+  const l = s.link || {};
+  $("link").innerHTML = (l.state === "running" ? "" : '<span class="bad">') + (LINK[l.state] || l.state || "—") +
+    (l.state === "running" ? "" : "</span>") + `，收到 ${l.messages ?? 0} 則，CRC 錯誤 ${l.crc_errors ?? 0}`;
+  $("sent").textContent = `${s.reports} 筆報告、${s.thumbs ?? 0} 張縮圖` + (s.skipped ? `，因推論太慢略過 ${s.skipped} 次` : "");
+  const st = s.settings || {};
+  $("detect").innerHTML = st.detect == null ? "—" : (Number(st.detect) === 1 ? "進行中（YOLO＋VLM）" : '<span class="bad">已停止</span>，等地面站按「開始偵測」') +
+    ` <button type="button" id="detectToggle" style="margin-left:8px;font:inherit;font-size:13px;border:1px solid var(--line);background:transparent;color:var(--accent);border-radius:4px;padding:1px 8px;cursor:pointer">${Number(st.detect) === 1 ? "停止" : "開始"}</button>`;
+  $("detectToggle").onclick = () => fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: { detect: Number(st.detect) === 1 ? 0 : 1 } }) });
+  $("settings").textContent = st.thumb_fps == null ? "—" :
+    `${Number(st.thumb_fps) > 0 ? `每秒 ${st.thumb_fps} 張、${st.thumb_max_side} px` : "不送縮圖"}；VLM 影像 ${st.vlm_max_side} px（地面站可調）`;
+}
+function renderNotes() {
+  $("notes").innerHTML = notes.length
+    ? notes.slice().reverse().map((n) => `<li><div>${esc(n.text)}</div><div class="t">${tm(n.received)} 收到</div></li>`).join("")
+    : '<li class="t">尚無通知</li>';
+}
+function popup(n) {
+  $("ovText").textContent = n.text;
+  $("overlay").hidden = false;
+  $("ovOk").focus();
+}
+$("ovOk").onclick = () => { $("overlay").hidden = true; };
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?role=monitor`);
+  ws.onclose = () => setTimeout(connect, 2000);
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === "hello") { showResult(m.result); showState(m.state); notes = m.notifications || []; renderNotes(); }
+    else if (m.type === "result") showResult(m.result);
+    else if (m.type === "state") showState(m.state);
+    else if (m.type === "notify") { notes.push(m.notify); notes = notes.slice(-50); renderNotes(); popup(m.notify); }
+  };
+}
+connect();
+</script>
+</body>
+</html>

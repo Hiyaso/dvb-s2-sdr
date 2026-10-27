@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E1419">
+<title>Jetson 相機</title>
+<style>
+:root {
+  --bg: #0E1419; --panel: #172029; --ink: #E3EAF0; --muted: #93A1AE; --line: #2B3946;
+  --accent: #86A9E6; --ok: #4DB38A; --warn: #E0AC3C; --crit: #EE6C5C;
+  --font: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.5 var(--font); display: flex; flex-direction: column; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.view { position: relative; flex: 1; min-height: 0; background: #000; padding-top: env(safe-area-inset-top, 0px); }
+video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.start {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 24px; text-align: center; background: var(--bg);
+}
+.start p { margin: 0; color: var(--muted); max-width: 22em; }
+.start label { display: flex; flex-direction: column; gap: 6px; width: min(100%, 22em); text-align: left; font-size: 14px; color: var(--muted); }
+.start input {
+  font: inherit; font-size: 18px; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px;
+}
+.start button {
+  font: inherit; font-weight: 600; font-size: 18px; border: 0; border-radius: 999px; padding: 14px 32px;
+  background: var(--accent); color: #0E1419;
+}
+.rec { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 12px); left: 12px; display: flex; align-items: center; gap: 6px;
+  background: rgba(0,0,0,.55); padding: 4px 10px; border-radius: 999px; font-size: 13px; }
+.rec i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.rec[data-on="1"] i { background: var(--crit); }
+.sel { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 12px); right: 12px; background: var(--accent); color: #0E1419;
+  padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+.panel { background: var(--panel); padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); }
+.status { display: flex; gap: 12px; align-items: baseline; }
+.badge { font-weight: 700; font-size: 20px; color: var(--muted); flex: none; }
+.badge.normal { color: var(--ok); } .badge.warning { color: var(--warn); } .badge.critical { color: var(--crit); }
+.desc { margin: 0; }
+.meta { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.toast {
+  position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top, 0px) + 12px); z-index: 10;
+  background: var(--ink); color: var(--bg); border-radius: 10px; padding: 14px 16px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+}
+.toast h2 { margin: 0 0 4px; font-size: 14px; color: #3F5E99; }
+.toast p { margin: 0 0 10px; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+.toast button { font: inherit; border: 0; border-radius: 6px; padding: 6px 16px; background: var(--bg); color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="view">
+  <video id="video" playsinline muted autoplay></video>
+  <div class="rec" id="rec" data-on="0"><i></i><span id="recText">未連線</span></div>
+  <div class="sel" id="sel" hidden>地面站正在看這支</div>
+  <div class="start" id="start">
+    <p id="startMsg">這支手機會把即時影像傳到 Jetson，Jetson 輪流用 AI 判讀每支手機的場域狀況，地面站可以選擇要看哪一支。</p>
+    <label>這支手機的名稱（地面站看到的）<input id="name" maxlength="24" placeholder="例如：A 區大門" autocomplete="off"></label>
+    <button type="button" id="startBtn">開啟相機並開始傳送</button>
+  </div>
+</div>
+<div class="panel" aria-live="polite">
+  <div class="status"><span class="badge" id="badge">待命</span><p class="desc" id="desc">尚未有辨識結果。</p></div>
+  <div class="meta" id="meta"></div>
+</div>
+<div class="toast" id="toast" role="alertdialog" aria-labelledby="toastTitle" hidden>
+  <h2 id="toastTitle">地面站通知</h2>
+  <p id="toastText"></p>
+  <button type="button" id="toastOk">知道了</button>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const LABEL = { normal: "一般", warning: "警告", critical: "嚴重" };
+let cfg = { phone_fps: 4, phone_max_width: 960, interval_s: 5, source: "browser" };
+let ws, sent = 0, lastCount = 0, canvas = document.createElement("canvas"), timer;
+
+// 每支手機一個固定 id（存在瀏覽器裡），名稱可改
+function myId() {
+  let id = null;
+  try { id = localStorage.getItem("phoneId"); } catch (_) {}
+  if (!id) {
+    id = "p" + Math.random().toString(16).slice(2, 10);
+    try { localStorage.setItem("phoneId", id); } catch (_) {}
+  }
+  return id;
+}
+const ID = myId();
+function myName() { return $("name").value.trim(); }
+try { $("name").value = localStorage.getItem("phoneName") || ""; } catch (_) {}
+
+async function loadCfg() {
+  try { cfg = await (await fetch("/api/config")).json(); } catch (_) {}
+  if (cfg.source !== "browser") {
+    $("startMsg").textContent = "Jetson 目前設定為從網址讀取影像（config 的 camera.source），這個頁面只顯示辨識結果與通知。";
+    $("startBtn").textContent = "只看結果";
+  }
+}
+
+function connect() {
+  const q = `?role=phone&id=${encodeURIComponent(ID)}&name=${encodeURIComponent(myName())}`;
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws${q}`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => setRec();
+  ws.onclose = () => { setRec(); setTimeout(connect, 2000); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === "hello") { if (m.result) showResult(m.result); if (m.state) showState(m.state); }
+    else if (m.type === "result") { if (!m.result.phone || m.result.phone === ID) showResult(m.result); }
+    else if (m.type === "state") showState(m.state);
+    else if (m.type === "notify") showToast(m.notify.text);
+    else if (m.type === "error") $("meta").textContent = m.message;
+  };
+}
+
+function setRec(fps) {
+  const ok = ws && ws.readyState === 1;
+  $("rec").dataset.on = ok && timer ? "1" : "0";
+  const name = myName() ? `${myName()}：` : "";
+  $("recText").textContent = name + (!ok ? "未連線，重新連線中" : timer ? `傳送中 ${fps ?? ""} fps` : "已連線");
+}
+
+function showState(s) {
+  $("sel").hidden = s.selected !== ID;
+}
+
+function showResult(r) {
+  $("badge").className = "badge " + r.status;
+  $("badge").textContent = LABEL[r.status];
+  $("desc").textContent = r.text;
+  const t = new Date(r.ts).toLocaleTimeString("zh-TW", { hour12: false });
+  const d = (r.detections || []).map((a) => `${a.cls}×${a.n}`).join("、");
+  $("meta").textContent = `${t} 截圖` + (d ? `，偵測到 ${d}` : "") + (r.escalated_by ? "，由 YOLO 規則升級" : "");
+}
+
+function showToast(text) {
+  $("toastText").textContent = text;
+  $("toast").hidden = false;
+  $("toastOk").focus();
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+}
+$("toastOk").onclick = () => { $("toast").hidden = true; };
+
+async function start() {
+  try { localStorage.setItem("phoneName", myName()); } catch (_) {}
+  if (ws && ws.readyState === 1) ws.close();   // 用新名稱重新連線
+  if (cfg.source !== "browser") { $("start").hidden = true; return; }
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    $("startMsg").textContent = "瀏覽器只允許在 https:// 頁面開相機。請改用 https:// 開啟這個網址，並接受自簽憑證警告。";
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    $("video").srcObject = stream;
+    await $("video").play();
+  } catch (err) {
+    $("startMsg").textContent = `無法開啟相機：${err.name}。請到瀏覽器設定允許這個網站使用相機後重試。`;
+    return;
+  }
+  $("start").hidden = true;
+  try { await navigator.wakeLock?.request("screen"); } catch (_) {}
+  timer = setInterval(sendFrame, 1000 / cfg.phone_fps);
+  setInterval(() => { setRec(sent - lastCount); lastCount = sent; }, 1000);
+}
+
+function sendFrame() {
+  const v = $("video");
+  if (!ws || ws.readyState !== 1 || ws.bufferedAmount > 256 * 1024 || !v.videoWidth) return;
+  const scale = Math.min(1, cfg.phone_max_width / v.videoWidth);
+  canvas.width = Math.round(v.videoWidth * scale);
+  canvas.height = Math.round(v.videoHeight * scale);
+  canvas.getContext("2d").drawImage(v, 0, 0, canvas.width, canvas.height);
+  canvas.toBlob((b) => { if (b && ws.readyState === 1) { ws.send(b); sent++; } }, "image/jpeg", 0.75);
+}
+
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible") { try { await navigator.wakeLock?.request("screen"); } catch (_) {} }
+});
+$("startBtn").onclick = start;
+loadCfg();
+connect();
+</script>
+</body>
+</html>

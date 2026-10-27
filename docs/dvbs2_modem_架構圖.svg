@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="820" viewBox="0 0 1500 820" font-family="Noto Sans TC, PingFang TC, Microsoft JhengHei, sans-serif" font-size="13">
+  <defs>
+    <marker id="ar" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L10,5 L0,10 z" fill="#333"/></marker>
+  </defs>
+  <rect width="1500" height="820" fill="#fff"/>
+  <text x="750" y="36" text-anchor="middle" font-size="22" font-weight="700">DVB-S2 數據機（USRP B210 FPGA 內）方塊圖 — dvb-s2-sdr 專案</text>
+  <text x="750" y="58" text-anchor="middle" font-size="13" fill="#555">ETSI EN 302 307-1 · 短幀 FECFRAME 16200 · QPSK 1/4–8/9、8PSK 3/5–8/9 · 導頻可開關 · roll-off 0.35/0.25/0.20 · Verilog-2001，Vivado 與 ISE（XST）都可合成</text>
+
+  <!-- ================= TX chain ================= -->
+  <rect x="30" y="80" width="1440" height="200" rx="10" fill="#fff3e8" stroke="#d9480f" stroke-width="1.5"/>
+  <text x="50" y="104" font-size="16" font-weight="700" fill="#d9480f">TX（rtl/tx/dvbs2_tx）：主機位元組 → 射頻</text>
+  <g font-size="12.5">
+    <rect x="50" y="120" width="150" height="62" rx="6" fill="#fff" stroke="#d9480f"/>
+    <text x="125" y="142" text-anchor="middle" font-weight="600">BBFRAME 組幀</text>
+    <text x="125" y="160" text-anchor="middle" fill="#444">BBHEADER＋CRC-8</text>
+    <text x="125" y="175" text-anchor="middle" fill="#444">DFL = Kbch − 80</text>
+    <rect x="220" y="120" width="130" height="62" rx="6" fill="#fff" stroke="#d9480f"/>
+    <text x="285" y="142" text-anchor="middle" font-weight="600">BB 擾碼</text>
+    <text x="285" y="160" text-anchor="middle" fill="#444">PRBS 15 階</text>
+    <rect x="370" y="120" width="140" height="62" rx="6" fill="#fff" stroke="#d9480f"/>
+    <text x="440" y="142" text-anchor="middle" font-weight="600">BCH 編碼</text>
+    <text x="440" y="160" text-anchor="middle" fill="#444">t = 12，GF(2¹⁴)</text>
+    <rect x="530" y="120" width="160" height="62" rx="6" fill="#fff" stroke="#d9480f"/>
+    <text x="610" y="142" text-anchor="middle" font-weight="600">LDPC 編碼（IRA）</text>
+    <text x="610" y="160" text-anchor="middle" fill="#444">n = 16200</text>
+    <text x="610" y="175" text-anchor="middle" fill="#444">ROM 由 Python 產生</text>
+    <rect x="710" y="120" width="150" height="62" rx="6" fill="#fff" stroke="#d9480f"/>
+    <text x="785" y="142" text-anchor="middle" font-weight="600">位元交錯＋映射</text>
+    <text x="785" y="160" text-anchor="middle" fill="#444">8PSK 交錯、QPSK/8PSK</text>
+    <text x="785" y="175" text-anchor="middle" fill="#444">星座映射</text>
+    <rect x="880" y="120" width="190" height="62" rx="6" fill="#fff" stroke="#d9480f"/>
+    <text x="975" y="142" text-anchor="middle" font-weight="600">PL 成幀</text>
+    <text x="975" y="160" text-anchor="middle" fill="#444">PLHEADER（SOF＋PLS 碼）</text>
+    <text x="975" y="175" text-anchor="middle" fill="#444">導頻 · Gold 擾碼 · dummy 幀</text>
+    <rect x="1090" y="120" width="150" height="62" rx="6" fill="#fff" stroke="#d9480f"/>
+    <text x="1165" y="142" text-anchor="middle" font-weight="600">RRC 成形濾波</text>
+    <text x="1165" y="160" text-anchor="middle" fill="#444">33 階、2 sps</text>
+    <text x="1165" y="175" text-anchor="middle" fill="#444">（B210：摺疊式 FIR）</text>
+    <rect x="1260" y="120" width="190" height="62" rx="6" fill="#eef4ff" stroke="#1c64f2"/>
+    <text x="1355" y="142" text-anchor="middle" font-weight="600" fill="#1c64f2">UHD DUC → AD9361 TX</text>
+    <text x="1355" y="160" text-anchor="middle" fill="#444">Fs = 2·Rs（1 GHz 等）</text>
+    <text x="1355" y="175" text-anchor="middle" fill="#444">radio_legacy 既有路徑</text>
+    <line x1="200" y1="151" x2="220" y2="151" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="350" y1="151" x2="370" y2="151" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="510" y1="151" x2="530" y2="151" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="690" y1="151" x2="710" y2="151" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="860" y1="151" x2="880" y2="151" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="1070" y1="151" x2="1090" y2="151" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="1240" y1="151" x2="1260" y2="151" stroke="#333" marker-end="url(#ar)"/>
+    <text x="750" y="212" text-anchor="middle" fill="#444">位元精確：TX 輸出與 Python 黃金模型 dvbs2_ref 逐符號比對（reg_tx：30 組 MODCOD×導頻×roll-off 全部通過）；LDPC 與 ldpc_fixed、BCH 與 bch_hw_model 位元精確</text>
+    <text x="750" y="234" text-anchor="middle" fill="#444">主機 → FPGA 的資料：位元組夾在 sc16 取樣裡（I[8] 有效、I[7:0] 位元組），走 UHD 原本的 TX 串流；沒資料時自動送 dummy 幀，發射不中斷</text>
+    <text x="750" y="256" text-anchor="middle" fill="#444">時序預算：每取樣 ≥ 8 個時脈；B210 主時脈 ≥ 8 × 取樣率（2 MHz 頻寬 → 2.96 MS/s → 23.7 MHz）</text>
+  </g>
+
+  <!-- ================= RX chain ================= -->
+  <rect x="30" y="300" width="1440" height="250" rx="10" fill="#eef4ff" stroke="#1c64f2" stroke-width="1.5"/>
+  <text x="50" y="324" font-size="16" font-weight="700" fill="#1c64f2">RX（rtl/rx/dvbs2_rx）：射頻 → 主機位元組</text>
+  <g font-size="12.5">
+    <rect x="50" y="340" width="150" height="62" rx="6" fill="#fff3e8" stroke="#d9480f"/>
+    <text x="125" y="362" text-anchor="middle" font-weight="600" fill="#d9480f">AD9361 RX → DDC</text>
+    <text x="125" y="380" text-anchor="middle" fill="#444">UHD 既有路徑</text>
+    <text x="125" y="395" text-anchor="middle" fill="#444">2 sps 複數取樣</text>
+    <rect x="220" y="340" width="110" height="62" rx="6" fill="#fff" stroke="#1c64f2"/>
+    <text x="275" y="362" text-anchor="middle" font-weight="600">AGC</text>
+    <text x="275" y="380" text-anchor="middle" fill="#444">數位增益</text>
+    <text x="275" y="395" text-anchor="middle" fill="#444">功率平均</text>
+    <rect x="350" y="340" width="180" height="62" rx="6" fill="#fff" stroke="#1c64f2"/>
+    <text x="440" y="362" text-anchor="middle" font-weight="600">匹配濾波＋定時恢復</text>
+    <text x="440" y="380" text-anchor="middle" fill="#444">RRC · Gardner 誤差偵測</text>
+    <text x="440" y="395" text-anchor="middle" fill="#444">Farrow 內插（±50 ppm）</text>
+    <rect x="550" y="340" width="180" height="62" rx="6" fill="#fff" stroke="#1c64f2"/>
+    <text x="640" y="362" text-anchor="middle" font-weight="600">幀同步＋PLS 解碼</text>
+    <text x="640" y="380" text-anchor="middle" fill="#444">SOF 相關 · 串流式 WHT</text>
+    <text x="640" y="395" text-anchor="middle" fill="#444">自動解出 MODCOD／導頻</text>
+    <rect x="750" y="340" width="170" height="62" rx="6" fill="#fff" stroke="#1c64f2"/>
+    <text x="835" y="362" text-anchor="middle" font-weight="600">載波恢復</text>
+    <text x="835" y="380" text-anchor="middle" fill="#444">三段 FLL（CFO 至 2 % Rs）</text>
+    <text x="835" y="395" text-anchor="middle" fill="#444">導頻相位＋DD-PLL</text>
+    <rect x="940" y="340" width="120" height="62" rx="6" fill="#fff" stroke="#1c64f2"/>
+    <text x="1000" y="362" text-anchor="middle" font-weight="600">解映射</text>
+    <text x="1000" y="380" text-anchor="middle" fill="#444">LLR，去交錯</text>
+    <text x="1000" y="395" text-anchor="middle" fill="#444">Gold 解擾</text>
+    <rect x="1080" y="340" width="170" height="62" rx="6" fill="#fff" stroke="#1c64f2"/>
+    <text x="1165" y="362" text-anchor="middle" font-weight="600">LDPC 解碼</text>
+    <text x="1165" y="380" text-anchor="middle" fill="#444">層化 min-sum，P = 45</text>
+    <text x="1165" y="395" text-anchor="middle" fill="#444">25 次迭代，可提前終止</text>
+    <rect x="1270" y="340" width="180" height="62" rx="6" fill="#fff" stroke="#1c64f2"/>
+    <text x="1360" y="362" text-anchor="middle" font-weight="600">BCH 解碼＋BB 輸出</text>
+    <text x="1360" y="380" text-anchor="middle" fill="#444">Berlekamp–Massey＋Chien</text>
+    <text x="1360" y="395" text-anchor="middle" fill="#444">BB 解擾、CRC-8 檢查</text>
+    <line x1="200" y1="371" x2="220" y2="371" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="330" y1="371" x2="350" y2="371" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="530" y1="371" x2="550" y2="371" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="730" y1="371" x2="750" y2="371" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="920" y1="371" x2="940" y2="371" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="1060" y1="371" x2="1080" y2="371" stroke="#333" marker-end="url(#ar)"/>
+    <line x1="1250" y1="371" x2="1270" y2="371" stroke="#333" marker-end="url(#ar)"/>
+    <text x="750" y="432" text-anchor="middle" fill="#444">FPGA → 主機：解出的位元組夾回 sc16 取樣（I[9] 幀尾、I[8] 有效、I[7:0] 位元組、Q = 16 位元序號），走 UHD 原本的 RX 串流；狀態字（鎖定、MODCOD、CFO、幀數、LDPC／BCH／CRC 計數、BER）由使用者暫存器讀回</text>
+    <text x="750" y="454" text-anchor="middle" fill="#444">系統回歸 reg_sys：完整回環 10 種情境（CFO 到 2 % Rs、±50 ppm 時脈差、無導頻、三種 roll-off）通過；BER 曲線由 C++ 通道模型＋Verilator 的 RTL LDPC/BCH 量測（sim/ber）</text>
+    <text x="750" y="476" text-anchor="middle" fill="#444">FPGA 快照：1024 個連續 DDC 取樣供主機算頻譜與 Es/N0（M2M4 盲估計）</text>
+    <text x="750" y="498" text-anchor="middle" fill="#444">B210 image：Spartan-6 LX150，單 radio；ISE 14.7 編譯約 45 分鐘，55.0k LUT（59 %）、occupied slice 80 %、238 RAMB16（88 %）、156 DSP48A1（86 %），時序全部通過</text>
+    <text x="750" y="520" text-anchor="middle" fill="#444">同一 RTL 也用於 Zynq-7020（PL 回環＋AXI-Lite）與 ADRV9364-Z7020（axi_ad9361 ＋ DMA）兩個板子專案</text>
+  </g>
+
+  <!-- ================= host program ================= -->
+  <rect x="30" y="570" width="1440" height="220" rx="10" fill="#eefbf1" stroke="#1a7f4b" stroke-width="1.5"/>
+  <text x="50" y="594" font-size="16" font-weight="700" fill="#1a7f4b">主機程式 dvbs2_b210（b210/host/dvbs2_b210.cpp，UHD C++）</text>
+  <g font-size="12.5">
+    <rect x="50" y="610" width="330" height="86" rx="6" fill="#fff" stroke="#1a7f4b"/>
+    <text x="215" y="632" text-anchor="middle" font-weight="600">模式</text>
+    <text x="215" y="650" text-anchor="middle" fill="#444">tx / rx / trx（同時收發，TX、RX 可不同頻率）</text>
+    <text x="215" y="666" text-anchor="middle" fill="#444">PRBS 量 BER · 檔案傳輸（檔頭＋長度）</text>
+    <text x="215" y="682" text-anchor="middle" fill="#444">UDP 模式：每個封包各自成框（sync／長度／序號／CRC）</text>
+    <rect x="400" y="610" width="330" height="86" rx="6" fill="#fff" stroke="#1a7f4b"/>
+    <text x="565" y="632" text-anchor="middle" font-weight="600">網頁模式 --web</text>
+    <text x="565" y="650" text-anchor="middle" fill="#444">一台 USRP 自收自發：鎖定、Es/N0、RSSI、CFO、</text>
+    <text x="565" y="666" text-anchor="middle" fill="#444">解碼率圖、頻譜、傳檔自測、TX/RX 參數即時修改</text>
+    <text x="565" y="682" text-anchor="middle" fill="#444">/api/status、/api/spectrum、/api/config</text>
+    <rect x="750" y="610" width="330" height="86" rx="6" fill="#fff" stroke="#1a7f4b"/>
+    <text x="915" y="632" text-anchor="middle" font-weight="600">--status-udp（本次新增）</text>
+    <text x="915" y="650" text-anchor="middle" fill="#444">任何模式每秒把狀態 JSON 與 1024 點頻譜</text>
+    <text x="915" y="666" text-anchor="middle" fill="#444">送到本機 UDP，給 fieldlink 儀表板顯示</text>
+    <text x="915" y="682" text-anchor="middle" fill="#444">鎖定、Es/N0、CFO、解碼率、頻譜／瀑布圖</text>
+    <rect x="1100" y="610" width="350" height="86" rx="6" fill="#fff" stroke="#1a7f4b"/>
+    <text x="1275" y="632" text-anchor="middle" font-weight="600">FPGA 控制</text>
+    <text x="1275" y="650" text-anchor="middle" fill="#444">UHD user settings regs（enable_user_regs）</text>
+    <text x="1275" y="666" text-anchor="middle" fill="#444">poke32 設定、peek64 讀狀態字、ID 0x44564232</text>
+    <text x="1275" y="682" text-anchor="middle" fill="#444">程式啟動時 UHD 把自製 image 載進 B210（不需燒錄）</text>
+    <text x="750" y="726" text-anchor="middle" fill="#444">fieldlink 的鏈路層（common/link.py，fpga 模式）＝ 啟動一個 dvbs2_b210 --mode trx --udp-in/--udp-out --status-udp，應用程式只對本機 UDP 埠讀寫</text>
+    <text x="750" y="748" text-anchor="middle" fill="#444">實測（2026-10-25，兩台 NI USRP-2901，同一房間）：全雙工 Nano 8PSK 2/3 增益 70 ↔ 筆電 QPSK 1/2 增益 80，Es/N0 約 19 dB，3000＋2000 個 UDP 封包零遺失</text>
+    <text x="750" y="770" text-anchor="middle" fill="#444">UHD 版本：筆電 4.9、Jetson 4.6；FPGA 相容編號 16 相同，同一顆 image 兩邊通用</text>
+  </g>
+</svg>

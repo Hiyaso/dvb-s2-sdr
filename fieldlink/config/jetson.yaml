@@ -1,0 +1,141 @@
+# ===== Jetson Orin Nano 端設定 =====
+
+node:
+  id: nano1               # 每台 Jetson 不同（英數），所有訊息都帶著它，地面站用來區分來源
+  name: 現場節點 1
+
+web:
+  host: 0.0.0.0
+  port: 8443
+  cert: jetson/certs/cert.pem      # 由 jetson/gen_cert.sh 產生；手機瀏覽器開相機必須走 HTTPS
+  key: jetson/certs/key.pem
+
+camera:
+  # browser：手機用瀏覽器開 https://10.42.0.1:8443/camera，不必裝 App（Android / iPhone 都可）
+  # 也可以填 RTSP / MJPEG 網址，例如 IP Webcam App：http://10.42.0.xx:8080/video
+  source: browser
+  phone_fps: 4            # 手機上傳的影格率（只是即時預覽用，辨識固定每 interval_s 取一張）
+  phone_max_width: 960
+  stale_after_s: 3        # 超過這麼久沒新影格就視為相機離線
+  phones_offline_s: 60    # 多支手機：斷線超過這麼久就從清單移除
+
+capture:
+  detect: 0               # 開機後先不辨識（0），等地面站儀表板按「開始偵測」；手機畫面與縮圖不受影響。要一開機就辨識改 1
+  interval_s: 5
+  vlm_max_side: 448       # 送進 VLM 前縮圖，影響推論時間與記憶體最大的參數（640 約 1300 個 token，448 約 650）；地面站可調
+  image_on: [critical]    # 哪些狀態要把影像一起回傳
+  image_max_side: 640
+  image_quality: 70
+  image_max_kb: 60        # 超過就降低品質重壓
+  critical_repeat: 2      # 嚴重事件重送次數（單向鏈路沒有重傳，靠重送提高送達率；地面站會去重）
+  # 多支手機時輪流辨識：每 interval_s 秒取「最久沒被辨識、且有新影格」的那支
+  # 被地面站選中的手機另外持續回傳縮圖（低優先權，報告與心跳永遠先送）
+  thumb_fps: 1            # 縮圖每秒張數（0 = 不送）；預設低，地面站儀表板可調到 3
+  thumb_max_side: 320     # 縮圖最長邊；地面站可調
+  thumb_quality: 60
+  thumb_max_kb: 60
+
+vlm:
+  url: http://127.0.0.1:11434
+  model: qwen3-vl:2b      # 也可換 qwen3-vl:4b、gemma3:4b
+  timeout_s: 30
+  num_predict: 300        # 輸出約 40–60 個 token；留餘裕，done=stop 就不會用完
+  # qwen3-vl:2b 是 thinking 版（ollama show 的 renderer 為 qwen3-vl-thinking）。think=false 與 /no_think 實測都擋不住它思考，
+  # token 配額用完後 content 為空。mode: prefill 用「assistant 預填空的 <think></think>」跳過思考（實測每次都成功）；
+  # 換成 instruct 版模型時改 mode: schema（受限解碼保證 JSON）
+  mode: prefill
+  think: null
+  num_ctx: 3072           # 448 px 影像約 650 個 token＋提示約 400＋輸出 300；越大 KV cache 吃越多記憶體（Ollama 曾因 OOM 被砍）
+  # 依場域改寫判斷準則，越具體越準
+  rules: |
+    一般：場域正常，沒有人員或設備異常。
+    警告：可能有風險但尚未造成危害，例如有人進入限制區域、設備有輕微異常、少量煙霧、地面有積水或障礙物、畫面過暗或被部分遮蔽。
+    嚴重：需要立即處理，例如明火、濃煙、有人倒地或受傷、打架或持械、大量淹水、設備損毀。
+
+yolo:
+  enabled: true
+  # 第一次啟動會自動下載 yolo26s.pt 並匯出成 models/yolo26s.engine（TensorRT FP16）
+  # 自己訓練的模型：把 best.pt 放到 models/ 並改這一行
+  model: models/yolo26s.pt
+  tensorrt: true
+  imgsz: 640
+  conf: 0.35              # 低於這個信心的框直接丟掉
+  iou: 0.5
+  max_det: 50
+  classes: null           # 只關心部分類別時列出，例如 [person, car, truck, knife]
+
+fusion:
+  yolo_to_vlm: true       # 把 YOLO 偵測結果寫進 VLM 的提示
+  mode: max               # max：取 VLM 與 YOLO 規則中較嚴重者；vlm：只參考、由 VLM 決定
+  draw_boxes: true        # 回傳的嚴重事件影像畫上偵測框
+  # YOLO 規則：命中就直接把狀態拉高到 level，不必等 VLM 同意
+  # COCO 預訓練模型沒有火、煙、倒地這類類別，真正有用的規則要等你訓練自己的模型
+  rules: []
+  # rules:
+  #   - {name: 明火, classes: [fire], min_conf: 0.45, level: critical}
+  #   - {name: 濃煙, classes: [smoke], min_conf: 0.50, level: critical}
+  #   - {name: 人員倒地, classes: [fallen_person], min_conf: 0.50, level: critical}
+  #   - {name: 未戴安全帽, classes: [no_helmet], min_conf: 0.50, level: warning}
+  #   - {name: 人員聚集, classes: [person], min_conf: 0.50, min_count: 6, level: warning}
+
+notify:
+  desktop: true           # Jetson 桌面跳出 notify-send 通知（需有桌面環境）
+  keep: 50
+
+heartbeat_s: 2
+
+link:
+  mode: fpga              # fpga | udp | dvbs2 | loopback
+  pid: 0x100
+  log_dir: logs
+  fpga:                   # FPGA 數據機（dvb-s2-sdr 專案的 dvbs2_b210 + 自製 B210 image），一個行程同時收發
+    program: /home/lab602/dvbs2_b210/host/build/dvbs2_b210
+    image: /home/lab602/dvbs2_b210/out/usrp_b210_dvbs2_fpga.bin
+    # 多台 USRP 時加 serial=...；num_send/recv_frames 加大 USB 緩衝，Jetson 跑 AI 時數據機較不會欠載（host U）/溢位（host O）
+    args: "num_send_frames=64,num_recv_frames=64"
+    tx_freq: 1000000000   # 下行 Jetson → 地面站（= 地面站的 rx_freq）⚠ 空中傳輸須符合 NCC 規範
+    rx_freq: 1050000000   # 上行 地面站 → Jetson（= 地面站的 tx_freq）
+    bw: 2000000           # 佔用頻寬，Rs = bw / (1 + roll-off)；兩端要一致
+    rolloff: 35
+    modcod: 13            # 下行 8PSK 2/3（約 2.5 Mbit/s）；RX 會自動解出對方的 MODCOD
+    tx_gain: 70           # 兩台 USRP 隔幾公尺時 40 收不到，70 實測 Es/N0 約 13 dB
+    rx_gain: 40
+    udp_in: 5000          # 本機 UDP：app → dvbs2_b210
+    udp_out: 6000         # 本機 UDP：dvbs2_b210 → app
+    rate_kbps: 2200       # 送出節流，略低於 MODCOD 容量的 90 %
+  udp:                    # mode=udp 時使用（不經射頻的開發模式）
+    listen: 0.0.0.0:47001
+    peer: 192.168.1.100:47000
+    rate_kbps: 800
+  dvbs2:
+    tx_cmd: dvbs2-tx
+    rx_cmd: dvbs2-rx
+    radio_python: /usr/bin/python3   # 執行 dvbs2-tx/rx 的 Python（要有 apt 裝的 GNU Radio）
+    bridge_python: /usr/bin/python3
+    samp_rate: 2000000
+    usrp:
+      args: "type=b200"
+      tx_antenna: TX/RX
+      rx_antenna: RX2
+      otw_format: sc16
+    tx:                   # 下行：Jetson → 地面站
+      freq: 1000000000    # ⚠ 範例頻率，實驗請用纜線＋衰減器；空中傳輸須符合 NCC 規範
+      gain: 50
+      sym_rate: 500000
+      modcod: qpsk1/2
+      frame_size: normal
+      rolloff: 0.2
+      pilots: true
+      fullscale: 0.8
+    rx:                   # 上行：地面站 → Jetson
+      freq: 1100000000
+      gain: 40
+      sym_rate: 500000
+      modcod: qpsk1/2
+      frame_size: normal
+      rolloff: 0.2
+      pilots: true
+      ldpc_iterations: 25
+    loopback:             # mode=loopback 自我測試用
+      snr: 10
+      freq_offset: 10000

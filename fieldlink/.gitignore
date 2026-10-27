@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+data/
+logs/
+models/
+*.pt
+*.onnx
+*.engine
+jetson/certs/

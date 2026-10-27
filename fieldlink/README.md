@@ -14,7 +14,7 @@
                               地面站電腦（路由器轉發 TCP 6767）：儀表板（手機清單、縮圖、選手機、鏈路狀態）、SQLite、影像存檔、CSV 匯出
 ```
 
-**鏈路（2026-10-27 起）**：OneWeb 衛星上網與 USRP DVB-S2 無線**二選一、儀表板可切換**（`link.mode: multi`，預設走 OneWeb；一次只跑一條，切換是先啟動新鏈路、兩邊都通了才停舊的，實測 3–8 秒）。OneWeb 走 `tcp` 模式：OneWeb 終端在 CGNAT 後面不能被連入，所以由 Nano 當 TCP client 連到地面站的對外位址
+**鏈路（2026-10-27 起）**：OneWeb 衛星上網與 USRP DVB-S2 無線**二選一、儀表板可切換**（`link.mode: multi`，開機預設走 USRP；一次只跑一條，切換是先啟動新鏈路、兩邊都通了才停舊的，實測 3–8 秒）。OneWeb 走 `tcp` 模式：OneWeb 終端在 CGNAT 後面不能被連入，所以由 Nano 當 TCP client 連到地面站的對外位址
 （路由器把 TCP 6767 轉發到地面站電腦），指令從同一條連線回送。TCP 本身可靠，不再需要為掉包重送，也不節流。
 **USRP 鏈路**：自建的 DVB-S2 無線鏈路（`fpga` 模式），數據機跑在 USRP B210 的 FPGA 裡（[dvb-s2-sdr](https://github.com/Hiyaso/dvb-s2-sdr) 專案的 `dvbs2_b210` 程式＋自製 image），
 兩端各一個 `dvbs2_b210` 行程同時收發，應用程式只對本機 UDP 埠讀寫。舊的 gr-dvbs2rx 路線（`dvbs2` 模式）仍保留但不再需要。
@@ -101,7 +101,7 @@ TensorRT 引擎綁定 GPU 與 TensorRT 版本，升級 JetPack 後請刪掉 `.en
 link:
   mode: multi
   links: [tcp, fpga]     # OneWeb、USRP
-  active: tcp            # 開機後走哪條（兩邊一樣）
+  active: fpga           # 開機後走哪條：fpga = USRP（預設）、tcp = OneWeb（兩邊一樣）
 ```
 
 - 平常只跑 `active` 那條。儀表板「資料鏈路」面板的 **OneWeb／USRP** 鈕送 `SELECT settings.link`；流程（`common/link.py` `MultiLink`）：

@@ -87,7 +87,7 @@ heartbeat_s: 2
 link:
   mode: multi             # multi：links 裡的鏈路擇一使用、儀表板可切換（平常只跑 active 那條）| tcp（只走 OneWeb）| fpga（只走 USRP）| udp | dvbs2 | loopback
   links: [tcp, fpga]      # tcp = OneWeb／網際網路，fpga = USRP B210 的 DVB-S2 無線
-  active: tcp             # 開機後走哪條；儀表板可切換（先啟動新鏈路、兩邊都通了才停舊的）
+  active: fpga            # 開機後走哪條：fpga = USRP DVB-S2（預設），tcp = OneWeb；儀表板可切換（先啟動新鏈路、兩邊都通了才停舊的）
   pid: 0x100
   log_dir: logs
   fpga:                   # FPGA 數據機（dvb-s2-sdr 專案的 dvbs2_b210 + 自製 B210 image），一個行程同時收發

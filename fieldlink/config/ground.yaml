@@ -22,7 +22,7 @@ select:                     # 選手機（SELECT）沒收到 ACK 的重送
 link:
   mode: multi               # multi：links 裡的鏈路擇一使用、儀表板可切換（平常只跑 active 那條）| tcp | fpga | udp | dvbs2 | loopback
   links: [tcp, fpga]        # tcp = OneWeb／網際網路（當 server 等 Nano 連入），fpga = USRP B210 的 DVB-S2 無線
-  active: tcp
+  active: fpga              # 開機後走 USRP DVB-S2（預設）；tcp = OneWeb；兩邊要一樣
   pid: 0x100
   log_dir: logs
   fpga:                     # FPGA 數據機（dvb-s2-sdr 專案的 dvbs2_b210 + 自製 B210 image）

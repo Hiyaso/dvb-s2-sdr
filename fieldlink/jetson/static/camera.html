@@ -13,6 +13,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* .start 有 display:flex，沒有這行 hidden 蓋不掉它，相機畫面會被開始頁遮住 */
 html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--ink); font: 16px/1.5 var(--font); display: flex; flex-direction: column; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

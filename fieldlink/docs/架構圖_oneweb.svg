@@ -142,13 +142,13 @@
   <line x1="1160" y1="598" x2="1160" y2="620" stroke="#333" marker-end="url(#ar)"/>
   <rect x="870" y="622" width="580" height="48" rx="8" fill="#fff" stroke="#1a7f4b"/>
   <text x="1160" y="642" text-anchor="middle" font-weight="600">電腦防火牆 ufw：允許 TCP 6767 進入</text>
-  <text x="1160" y="660" text-anchor="middle" fill="#444" font-size="12.5">sudo ufw allow 6767/tcp（做一次）· 電腦區網位址 192.168.60.200</text>
+  <text x="1160" y="660" text-anchor="middle" fill="#444" font-size="12.5">sudo ufw allow 6767/tcp（做一次）· 電腦區網位址 192.168.0.80</text>
 
   <line x1="1160" y1="670" x2="1160" y2="692" stroke="#333" marker-end="url(#ar)"/>
   <text x="1172" y="686" fill="#555" font-size="12">有線區網</text>
   <rect x="870" y="694" width="580" height="92" rx="8" fill="#fff" stroke="#1a7f4b"/>
   <text x="1160" y="716" text-anchor="middle" font-weight="700">路由器／NAT（一般網路，對外 123.193.37.73）</text>
-  <text x="1160" y="736" text-anchor="middle" fill="#444" font-size="12.5">通訊埠轉發：TCP 6767 → 地面站電腦 192.168.60.200:6767</text>
+  <text x="1160" y="736" text-anchor="middle" fill="#444" font-size="12.5">通訊埠轉發：TCP 6767 → 地面站電腦 192.168.0.80:6767</text>
   <text x="1160" y="754" text-anchor="middle" fill="#444" font-size="12.5">對外 IP 若被電信業者更換，要改 Nano 的 link.tcp.connect（或兩邊改用 Tailscale 就不必轉發）</text>
   <text x="1160" y="774" text-anchor="middle" fill="#444" font-size="12.5">已驗證：從公網位址 123.193.37.73:6767 連入會到達地面站程式</text>
 
